@@ -29,7 +29,7 @@
 | E-004 | 2026-09-09 | pytest 642 passed/4 skipped(exit0)；check_contracts exit0；handlers114/bound_local100/unbound6/visible109/rules51；Gate 44→42/缺口1；W913 free 通过、workflow 未达 released | 通过（F-004 完成/F-006 部分） | @a75fab3 | REPORT-MIG-INTEGRATION.md | 长期 |
 | E-005 | 2026-09-09 | R21 收口 Gate 缺口：m0.json:150 review_gate candidate→data（gate_type_for→blocked_input）+ 断言 tests/test_migration_m0.py:466-507；pytest 643 passed/4 skipped(exit0)；check_contracts exit0（--strict 无新增 W） | 通过（44 需补→43 覆盖/0 缺口/1 有意不加） | @f44fbf7 | GATE-COVERAGE-INT2.md §3.3 | 长期 |
 | E-006 | 2026-09-09 | W913 双路径实跑（v2_w913.py）：workflow run-b84071dc…/free run-3f6b9383…（source=llm）均 completed+released+is_current_head true；pytest 659 passed/4 skipped(exit0)；check_contracts exit0 | 通过（F-006 完成） | @1175bfe | REPORT-MIG-INTEGRATION.md §11 | 长期 |
-| E-007 | 2026-09-09 | 基础资料先行实跑（int2_r5_accept.py，面板形状）：全 master_data → route=free/skills=[business-data-identification]（LLM 0.9）；approve 候选门 → published 72（bom W-H913/document W-H913-sop）；再传订单 M2 无 data 门（bom 248 行/SOP 15 工序）；pytest 682 passed/4 skipped(exit0)；check_contracts exit0 | 通过（F-007 完成） | 见报告 §12 | REPORT-MIG-INTEGRATION.md §12 | 长期 |
+| E-007 | 2026-09-09 | 基础资料先行实跑（面板形状）：全 master_data→route=free/business-data-identification（LLM 0.9）→approve→published 72（bom W-H913/document W-H913-sop）；再传订单 M2 无 data 门（bom 248/SOP 15）；pytest 682/4(exit0)；check_contracts exit0 | 通过（F-007） | 报告 §12 | REPORT-MIG-INTEGRATION.md §12 | 长期 |
 
 ## Gate 记录
 
