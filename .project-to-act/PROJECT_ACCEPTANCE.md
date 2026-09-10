@@ -4,10 +4,10 @@
 
 ## 当前验收结论
 
-- 结论：V2 工具迁移 6 分片（M0–M5）已全合入集成分支并全绿（E-004）；F-004 完成、F-006 完成（E-006）；Gate 覆盖缺口 0（E-005，R21 收口）
-- 验收范围：V2-M3 注册批次（119 工具）+ 集成收口 + W913 双路径联调
+- 结论：V2 工具迁移 6 分片（M0–M5）已全合入集成分支并全绿（E-004）；F-004 完成、F-006 完成（E-006）；Gate 覆盖缺口 0（E-005，R21 收口）；**基础资料先行接线完成（E-007，F-007）：全 master_data 附件 → `business-data-identification` → candidate 门批准发布 canonical → 再传订单 M2 不再开数据门**
+- 验收范围：V2-M3 注册批次（119 工具）+ 集成收口 + W913 双路径联调 + 基础资料先行（BOM/SOP）接线
 - 最后检查：2026-09-09
-- 遗留问题：B-001 批准前已写（「先改书再改码」）；B-003..B-007 已修复（第四轮 K1–K6）
+- 遗留问题：B-001 批准前已写（「先改书再改码」）；B-003..B-007 已修复（第四轮 K1–K6）；B-008..B-012 已修复（第五轮 G1–G4 + R2 读口补）；canonical SOP 无权威工时 → M5 快照门仍缺数（源数据缺口）；库存/工程图未纳入 `canonical_records_from_batch`
 
 ## 验收标准
 
@@ -29,6 +29,7 @@
 | E-004 | 2026-09-09 | pytest 642 passed/4 skipped(exit0)；check_contracts exit0；handlers114/bound_local100/unbound6/visible109/rules51；Gate 44→42/缺口1；W913 free 通过、workflow 未达 released | 通过（F-004 完成/F-006 部分） | @a75fab3 | REPORT-MIG-INTEGRATION.md | 长期 |
 | E-005 | 2026-09-09 | R21 收口 Gate 缺口：m0.json:150 review_gate candidate→data（gate_type_for→blocked_input）+ 断言 tests/test_migration_m0.py:466-507；pytest 643 passed/4 skipped(exit0)；check_contracts exit0（--strict 无新增 W） | 通过（44 需补→43 覆盖/0 缺口/1 有意不加） | @f44fbf7 | GATE-COVERAGE-INT2.md §3.3 | 长期 |
 | E-006 | 2026-09-09 | W913 双路径实跑（v2_w913.py）：workflow run-b84071dc…/free run-3f6b9383…（source=llm）均 completed+released+is_current_head true；pytest 659 passed/4 skipped(exit0)；check_contracts exit0 | 通过（F-006 完成） | @1175bfe | REPORT-MIG-INTEGRATION.md §11 | 长期 |
+| E-007 | 2026-09-09 | 基础资料先行实跑（int2_r5_accept.py，面板形状）：全 master_data → route=free/skills=[business-data-identification]（LLM 0.9）；approve 候选门 → published 72（bom W-H913/document W-H913-sop）；再传订单 M2 无 data 门（bom 248 行/SOP 15 工序）；pytest 682 passed/4 skipped(exit0)；check_contracts exit0 | 通过（F-007 完成） | 见报告 §12 | REPORT-MIG-INTEGRATION.md §12 | 长期 |
 
 ## Gate 记录
 
@@ -42,3 +43,4 @@
 | 2026-09-09 | V2 工具迁移集成收口（6 分片 + fact_gateway + W913 双路径 + Gate 覆盖 + 账本） | E-004 | 通过（642 passed/4 skipped；check_contracts exit 0） | workflow 路径未达 m5.released（报告 §4）；B-001/B-002 待「先改书再改码」 | F-004 完成、F-006 部分完成 |
 | 2026-09-09 | Gate 覆盖缺口微收口（INT2 第三轮 · R21：`data_import_commit` 声明对齐 + 断言） | E-005 | 通过（643 passed/4 skipped；check_contracts exit 0；--strict 无新增 W） | workflow 路径未达 m5.released（K1–K5）；B-001 批准前已写 | Gate 缺口 0（43 覆盖 + 1 有意不加 = 44）；B-002 已修复 |
 | 2026-09-09 | W913 workflow 路径打通（INT2 第四轮 · K1–K6：M0 前向装配 / 门补数可见 / 工序形状 / 降级日历 / 降级资源） | E-006 | 通过（659 passed/4 skipped；check_contracts exit 0；双路径 completed+released，判定器 PASS 5/5） | B-001 批准前已写（先改书再改码）；K6 实跑路径工位来自 supplement，由严格校验单测锁定 | F-006 完成；B-003..B-007 已修复 |
+| 2026-09-09 | 基础资料上传接线（INT2 第五轮 · G1–G4 + R2 读口：master_data 路由 / 技能载荷 / candidate 门+canonical 发布 / 缺产品编码 fail-closed） | E-007 | 通过（682 passed/4 skipped；check_contracts exit 0；`run-6793a0db…` route=free+published 72、`run-ba604dea…` M2 无 data 门） | B-001 批准前已写（先改书再改码）；canonical SOP 无权威工时 → M5 快照门仍缺数（源数据缺口）；库存/工程图未纳入 canonical（后续项） | F-007 完成；B-008..B-012 已修复 |
