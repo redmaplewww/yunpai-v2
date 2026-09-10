@@ -106,8 +106,10 @@ class QwenRouter:
             "route=workflow 时 workflow_id 必须从给定 workflows 中按 id 精确选择，不能为空也不能自造；"
             "route=chat 时必须额外返回 answer，用中文直接回答用户问题。可选 skills 字段用于选择高阶 Skill，只能从给定 skill catalog 中按 name 精确选择。"
             "tools 只能从给定 catalog 选择。skill 名称必须与 catalog 中的 name 完全一致，不能自造或拼接版本号。"
-            "上传原始业务文件（订单/BOM/SOP/工程图等）时首选 workflow=m1_m5_document_to_plan；"
-            "上传基础资料/业务资料（BOM、SOP、设备、工位、人员、库存、供应商、财务、目录批量）时必须在 skills 中给出 business-data-identification。"
+            "选择高阶 Skill 时不要同时列出该 Skill 内部会调用的工具（tools 只填 Skill 之外的独立工具，无法确定时留空）；"
+            "上传文件时按附件 kind 判定，两条判据互斥：附件中含 kind=\"order\" 的条目 → 首选 workflow=m1_m5_document_to_plan（订单主链）；"
+            "附件非空且全部为 kind=\"master_data\"（BOM、SOP、设备、工位、人员、库存、供应商、财务、目录批量等基础资料）且不含 order 附件 → route=free 且 skills 必须给出 business-data-identification。"
+            "两类同时出现时以订单主链为准（workflow=m1_m5_document_to_plan），不要同时给 business-data-identification。"
         )
 
     @staticmethod

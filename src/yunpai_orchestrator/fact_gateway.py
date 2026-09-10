@@ -102,6 +102,15 @@ def read_entities(entity_type: str, tenant_id: str = "default",
     —— 与 ``orchestration_bridge._m0_local_entities`` 原实现一致（顶层优先，
     payload 自带的 ``canonical_key`` 覆盖读口键）。
 
+    形状归一（R2，含 INT2 第五轮修正）：``merge_attributes`` 对**两层**都生效——
+    1. 记录信封层的 ``attributes``（旧 business_catalog 平铺记录）；
+    2. 信封内 ``payload``（m0.ingest.v1 业务体）自己的 ``attributes``。
+    第 2 层是必需项：``business_catalog.canonical_records_from_batch`` 把 SOP 的
+    ``route_steps`` 落在 ``record["payload"]["attributes"]`` 下（BOM 的 ``lines``
+    在业务体顶层），只做第 1 层会让 ``orchestration_bridge._route_steps_from_entities``
+    读不到任何工序（实测 route_steps=0，M2 工程事实不完整）。同名一律顶层优先、
+    只增不改：业务体已有键不被覆盖。
+
     失败语义（**不静默造数**）：
     - 库文件不存在 → 返回 ``[]``，且**不创建**空库（先判 ``exists()``）；
     - ``M0Store`` 读口异常 → 原样抛出，由调用方决定是否失败关闭；
@@ -127,5 +136,9 @@ def read_entities(entity_type: str, tenant_id: str = "default",
                 continue
         if not isinstance(payload, dict):
             continue
-        out.append({"canonical_key": row.get("canonical_key"), **merge_attributes(payload)})
+        item = {"canonical_key": row.get("canonical_key"), **merge_attributes(payload)}
+        inner = item.get("payload")
+        if isinstance(inner, dict):
+            item["payload"] = merge_attributes(inner)
+        out.append(item)
     return out

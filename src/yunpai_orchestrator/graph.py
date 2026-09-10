@@ -314,6 +314,80 @@ def _apply_candidate_approval(state: dict[str, Any], gate: dict[str, Any], *, ac
     return outputs
 
 
+def _publish_business_canonical(state: dict[str, Any], gate: dict[str, Any], *,
+                                actor: str) -> dict[str, Any] | None:
+    """基础资料识别技能的 candidate 门批准 → 候选批次发布为 M0 canonical（G3）。
+
+    与 INT `_wt/REALFLOW/src/yunpai_langgraph/graph.py:718-775`（`_apply_candidate_review`
+    的 candidate 分支）同语义：**候选门批准就是人工审核结论**，批准即用
+    `m0_catalog_ingest.CatalogService(db_path=YUNPAI_M0_DB).publish_records(...)`
+    原子发布，并把结果写回 `result["m0_catalog_publish"]`（+ `review_applied` 与发布
+    计数进 trace）。只对 `business-data-identification` 生效；其余工具的 candidate 门
+    只记录批准结论（`_apply_candidate_approval` / facade 语义）。
+
+    失败语义（不伪造发布计数、不击穿图）：
+    - 未配置 `YUNPAI_M0_DB` → `status=skipped`（与 INT 同口径，模块 HTTP 发布已废弃）；
+    - 校验失败（`CatalogValidationError`）→ `status=failed`，并返回 `publish_conflict`
+      交回调用方：撤回本次授权 + 步骤退回 pending（候选门重新打开，人工可再批/拒绝）。
+      **不抛异常**——resume 后抛错会把该 resume 值固化进 checkpoint，Gate 通道会卡死
+      （本文件 `reviewer_check_node` 的既有教训，见 graph.py:363-371）。
+    """
+    if (str(gate.get("type")) != "candidate"
+            or str(gate.get("tool") or "") != "business-data-identification"):
+        return None
+    outputs = dict(state.get("outputs") or {})
+    envelope = outputs.get("business-data-identification")
+    if not isinstance(envelope, dict):
+        return None
+    records = envelope.get("m0_candidate_records")
+    if not isinstance(records, list) or not records:
+        return None
+    import os
+
+    db_path = str(os.getenv("YUNPAI_M0_DB") or "")
+    trace = list(state.get("trace") or [])
+    if not db_path:
+        publication: dict[str, Any] = {
+            "status": "skipped", "published": 0,
+            "reason": "未配置 YUNPAI_M0_DB；模块 HTTP canonical 发布已废弃",
+        }
+    else:
+        from .m0_catalog_ingest import CatalogService, CatalogValidationError
+
+        try:
+            publication = CatalogService(db_path).publish_records(
+                records,
+                tenant_id=str(state.get("tenant_id") or "default"),
+                task_id=str(state.get("task_id") or "task"),
+                actor=str(actor or "operator"),
+            )
+        except CatalogValidationError as exc:
+            publication = {"status": "failed", "published": 0,
+                           "error": f"{exc.code}: {exc}"[:500]}
+        except Exception as exc:  # noqa: BLE001 —— 读口/库异常按发布失败如实上报
+            publication = {"status": "failed", "published": 0,
+                           "error": f"{type(exc).__name__}: {exc}"[:500]}
+    stamped = dict(envelope)
+    stamped["m0_catalog_publish"] = publication
+    stamped["review_applied"] = {
+        "gate": "candidate", "actor": str(actor or ""), "decision": "approve",
+        "status": str(publication.get("status") or ""),
+        "published": int(publication.get("published") or 0),
+    }
+    outputs["business-data-identification"] = stamped
+    trace.append({"event": "m0.canonical_publish", "tool": "business-data-identification",
+                  "status": str(publication.get("status") or ""),
+                  "published": int(publication.get("published") or 0),
+                  "duplicates": int(publication.get("duplicates") or 0),
+                  "candidate_records": len(records), "actor": str(actor or ""),
+                  "at": now_iso()})
+    updates: dict[str, Any] = {"outputs": outputs, "trace": trace}
+    if str(publication.get("status")) == "failed":
+        updates["publish_conflict"] = {
+            "code": "M0_PUBLISH_FAILED", "message": str(publication.get("error") or "")}
+    return updates
+
+
 def reviewer_check_node(deps: GraphDeps) -> Callable:
     async def _node(state: RunStateV2) -> dict[str, Any]:
         engine = deps.engine
@@ -406,6 +480,27 @@ def reviewer_check_node(deps: GraphDeps) -> Callable:
                         if "outputs" in released and "outputs" in updates:
                             released["outputs"] = {**updates["outputs"], **released["outputs"]}
                         updates = {**updates, **released}
+                # 基础资料识别技能的 candidate 门批准 → 候选批次发布 M0 canonical（G3）。
+                # 放在 M5 apply 之后：两者产出不同的 outputs 键，合并互不覆盖。
+                published = _publish_business_canonical(
+                    state, gate, actor=str((decision or {}).get("actor") or "operator"))
+                if published is not None:
+                    publish_conflict = published.pop("publish_conflict", None)
+                    if publish_conflict:
+                        # 发布失败（校验/读口）：不把失败吞成 completed——撤回本次授权 +
+                        # 步骤退回 pending，候选门重新打开（人工可再批或拒绝）。
+                        plan = engine.mark(plan, step_id, "pending")
+                        step = {**step, "status": "pending"}
+                        updates = {**updates, **published,
+                                   "plan": plan, "current_step": step,
+                                   "pending_gate": {**gate, "conflict": publish_conflict},
+                                   "authorized_steps": [
+                                       s for s in (state.get("authorized_steps") or [])
+                                       if s != tool]}
+                    else:
+                        if "outputs" in published and "outputs" in updates:
+                            published["outputs"] = {**updates["outputs"], **published["outputs"]}
+                        updates = {**updates, **published}
                 return updates
             if normalized == "reject":
                 plan = engine.mark(plan, step_id, "skipped")

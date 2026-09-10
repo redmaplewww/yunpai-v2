@@ -79,6 +79,11 @@ async def test_skill_accepts_files_and_returns_batch_with_mode(tmp_path):
     context = {"task_id": "TASK-OK-1"}
     payload = {
         "mode": "master_data",
+        # G4（INT2 第五轮）：缺显式 product_code 且有 accepted 文件时技能返回
+        # ``needs_product_code``（fail-closed，不发布空批次）——本用例验证的是
+        # 「接受文件并回批次」，故显式给出产品编码；缺编码路径见
+        # tests/test_int2_r5_master_data_upload.py。
+        "product_code": "P-TEST-1",
         "files": [
             {"filename": "设备台账.json", "content_b64": base64.b64encode(b'{"records":[{"kind":"equipment"}]}').decode(), "content_type": "application/json"},
         ],

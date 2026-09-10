@@ -10,6 +10,9 @@
 - data_import_commit: success==False → fail
 - run_bom_sop_workflow: 产出工程草稿 → gate engineering（禁当 retry 用）
 - ingest_canonical: 候选落库 → gate candidate
+- business-data-identification（技能，字段在顶层）: status=="needs_product_code"
+  → gate blocked_input（补 product_code 重试）；m0_candidate_records 非空
+  → gate candidate（批准后发布 M0 canonical，G3/G4）
 - M3 旧审批四件: 执行成功 → gate authorization（R8 后置等价门；合同 review_gate 同步声明）
 - BLOCKED_INPUT 结果 → gate blocked_input（data 补数门）
 - M4 写工具（16 条，rows-S5.md §「需补审查」）：缺供应商映射 → gate procurement
@@ -128,6 +131,22 @@ RULES: dict[str, list[Check]] = {
     "ingest_canonical": [
         Check("success", "eq", True, action="gate:candidate",
               reason="canonical 候选落库须 M0 candidate Gate 审批后发布"),
+    ],
+    # ── 基础资料识别技能（G3/G4，INT2 第五轮）────────────────────────────
+    # 技能结果不是工具信封（无 ``data`` 层）：``status`` / ``m0_candidate_records``
+    # 都在顶层，故 check 字段路径不加 ``data.`` 前缀。
+    #   1) 缺产品编码（G4）→ blocked_input（data Gate：retry+supplement 补
+    #      product_code 后重试）。fail-closed：不静默 completed、不发布空批次；
+    #   2) 有候选记录（G3）→ candidate Gate，批准后由 graph 发布 canonical
+    #      （``_publish_business_canonical``），否则 71 条候选静默丢弃。
+    # 与 R18 口径一致：主数据/事实审批用 candidate；输入缺口用 blocked_input。
+    # 顺序：candidate 在前 = 本技能的**主门**（``gate_type_for`` 取第一个 gate 动作），
+    # 两条 check 互斥（``needs_product_code`` 时候选必为空），不影响 evaluate 命中。
+    "business-data-identification": [
+        Check("m0_candidate_records", "truthy", action="gate:candidate",
+              reason="业务资料候选须人工审核后发布 canonical（M0 candidate Gate）"),
+        Check("status", "eq", "needs_product_code", action="gate:blocked_input",
+              reason="基础资料已识别但缺少产品编码：补 product_code 后重试（不得静默发布空批次）"),
     ],
     # ── M3 旧审批族（R6/R8）：外部写入 → 后置 authorization 门（合同 review_gate 同步声明）──
     "approve_m3_task": _authorization_gate(

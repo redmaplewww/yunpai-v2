@@ -51,6 +51,36 @@ def _classify_exception(exc: Exception) -> tuple[str, str]:
     return "TOOL_ERROR", f"{type(exc).__name__}: {exc}"
 
 
+#: 派发 Skill 时从**顶层** request 并入载荷的键（G2，INT2 第五轮）。
+#: 调用方显式写进 ``request[技能名]`` 的值永远优先（只在缺键时并入）。
+_SKILL_TOP_LEVEL_KEYS: tuple[str, ...] = (
+    "message", "product_code", "product_name", "attachments", "documents",
+)
+
+
+def skill_payload(state: RunStateV2, tool: str) -> dict[str, Any]:
+    """Skill 载荷 = ``request[tool]``（显式优先）+ 顶层同义键（仅缺键时并入）。
+
+    G2（INT2 第五轮）背景：V2 只把 ``request[技能名]`` 当载荷（原 ``executor.py:68``），
+    而前端「基础资料识别落库」面板把产品编码/文件放在**顶层** ``message``/``documents``
+    里 → ``identify_business_data`` 的正则取不到产品编码、也看不到文件（实测 records=0）。
+    这里只做「缺键才并入」，不覆盖调用方显式值；tool 路径完全不变。
+    """
+    request = state.get("request", {})
+    payload = dict(request.get(tool) or {})
+    for key in _SKILL_TOP_LEVEL_KEYS:
+        if key not in payload and request.get(key) not in (None, ""):
+            payload[key] = request[key]
+    # 文件别名：``identify_business_data`` 读 ``files``（legacy ``_payload_for`` 同口径
+    # ``files = request.documents or request.attachments``）。仅当调用方未显式给
+    # ``files`` 时补上，否则整批附件会因键名不同被当成「没有文件」。
+    if not payload.get("files"):
+        files = request.get("documents") or request.get("attachments")
+        if isinstance(files, list) and files:
+            payload["files"] = files
+    return payload
+
+
 def make_worker_execute(deps) -> Callable:
     """deps: GraphDeps（见 graph.py）。返回 LangGraph 节点函数。"""
     async def worker_execute(state: RunStateV2) -> dict[str, Any]:
@@ -65,7 +95,7 @@ def make_worker_execute(deps) -> Callable:
         failed = False
         try:
             if kind == "skill":
-                payload = dict(state.get("request", {}).get(tool) or {})
+                payload = skill_payload(state, tool)
                 result = await deps.skills.call(tool, payload, tool_context(state, tool))
             else:
                 assembled = await deps.assembler.assemble(tool, state)

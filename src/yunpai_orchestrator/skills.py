@@ -123,6 +123,8 @@ async def identify_business_data(payload: dict[str, Any], context: dict[str, Any
     上传文件逐个返回状态（accepted/needs_review/unsupported/parse_failed/
     skipped），缺失 content_b64 的文件标记 skipped 而不是静默 continue；
     没有任何 accepted 文件时返回失败而非 candidate_created 空批次。
+    有 accepted 文件但拿不到显式 ``product_code`` 时返回 ``status=needs_product_code``
+    （fail-closed，G4）：不猜产品身份、不发布空批次，由审查门开 blocked_input 补数。
     """
     from .uploads import UPLOAD_MODES, UploadSummary, require_content_b64, to_attachment_record, validate_mode
 
@@ -197,9 +199,36 @@ async def identify_business_data(payload: dict[str, Any], context: dict[str, Any
     identity_text = " ".join(str(payload.get(key) or "") for key in ("product_code", "product_name", "message"))
     product_match = re.search(r"\b[A-Z]{1,4}-[A-Z0-9]{2,}\b", identity_text)
     product_code = str(payload.get("product_code") or (product_match.group(0) if product_match else "")).strip()
+    product_name = str(payload.get("product_name") or payload.get("message") or "")
+    if not product_code and int(summary.accepted or 0) > 0:
+        # G4（INT2 第五轮）：产品身份是**显式事实**，缺它时既不能凭文件名/路径猜，
+        # 也不能静默返回 candidate_created + 0 条候选（操作者看不到缺什么）。
+        # fail-closed：返回可诊断结果（缺什么、怎么补），由审查门开
+        # ``blocked_input``（data Gate：retry+supplement 补 product_code）后重试；
+        # 绝不发布空批次、绝不把空结果当「已完成」。
+        return {
+            "skill": "business-data-identification",
+            "skill_mode": mode,
+            "status": "needs_product_code",
+            "code": "NEEDS_PRODUCT_CODE",
+            "message": "缺少产品编码：请提供产品编码（如 W-H913）后重试；"
+                       "本次未生成 canonical 候选（不发布空批次）",
+            "missing_fields": ["product_code"],
+            "schema_version": "yunpai.business-catalog.v2",
+            "upload_summary": summary.as_dict(),
+            "sensitivity_summary": sensitivity_summary,
+            "batch": batch_result,
+            "product_code": "",
+            "m0_candidate_records": [],
+            "m0_candidate_record_count": 0,
+            "available_next_actions": ["provide_product_code"],
+            "next_actions": ["provide_product_code"],
+            "evidence": [{"module": "orchestrator", "source_ref": batch_result["root_path"],
+                          "evidence_ref": f"business-catalog:{batch_result['batch_id']}",
+                          "detail": "文件哈希、分类和字段观察已写入候选库；缺显式 product_code，未生成 canonical 候选"}],
+        }
     from .business_catalog import canonical_records_from_batch
 
-    product_name = str(payload.get("product_name") or payload.get("message") or "")
     canonical_records = canonical_records_from_batch(
         db_path,
         batch_id=str(batch_result.get("batch_id") or ""),
