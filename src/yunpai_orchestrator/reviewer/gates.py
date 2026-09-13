@@ -15,6 +15,9 @@ GATE_ALLOWED_ROLES: dict[str, tuple[str, ...]] = {
     "apply": ("production-manager", "admin"),
     "authorization": ("operator", "admin"),
     "blocked_input": ("data-steward", "engineering-manager", "production-manager", "admin"),
+    # finance（F-008 / D-005）：成本确认（trial→confirmed）、月末结账、单据落库。
+    # 不复用 authorization：那支角色是通用 operator，与"财务口径须财务确认"不符。
+    "finance": ("finance-officer", "admin"),
 }
 
 #: resume 决策语义矩阵（书二 §6.2；业务语义沿用旧系统）。
@@ -27,6 +30,7 @@ GATE_DECISIONS: dict[str, tuple[str, ...]] = {
     "authorization": ("approve", "reject"),
     "procurement": ("retry", "supplier_by_material", "reject"),
     "blocked_input": ("retry", "supplement", "reject"),
+    "finance": ("approve", "reject"),
 }
 
 _APPROVE_LIKE = {"approve", "allow", "continue"}
