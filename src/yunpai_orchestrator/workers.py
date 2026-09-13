@@ -2002,6 +2002,10 @@ HANDLERS = {
     "list_costing_snapshots": _m6("list_costing_snapshots"),
     "get_costing_snapshot": _m6("get_costing_snapshot"),
     "list_month_costing": _m6("list_month_costing"),
+    # 内核读工具（纯算数：算产品成本 / 订单成本审计 / 费用分摊）——无副作用、无门
+    "get_product_cost": _m6("get_product_cost"),
+    "audit_order_cost": _m6("audit_order_cost"),
+    "allocate_expenses": _m6("allocate_expenses"),
     # M0 自描述表识别（agent-driven file recognition，确定性安全网）
     "sample_file": sample_file,
     "ingest_recognized": ingest_recognized,

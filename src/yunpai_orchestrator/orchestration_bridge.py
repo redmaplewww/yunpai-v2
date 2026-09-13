@@ -1125,6 +1125,112 @@ def _period_of(value: Any) -> str:
     return text[:7] if len(text) >= 7 and text[4] == "-" else ""
 
 
+def _assemble_costing_facts(state: RunState, product_code: str) -> dict[str, Any] | None:
+    """**产品级成本事实**（BOM 行 / 工艺工序 / 库存 / 费率 / M4 采购价源）。
+
+    为什么抽成一个函数：`save_costing_snapshot`（落试算快照）与 `get_product_cost`
+    （当场算/报价预览）必须吃**同一套事实**——两条装配各写一份，迟早会出现
+    「预览 100、落库 105」这种数字漂移（D8 的当场算与账上快照必须可比）。
+
+    product_code 缺失 → 返回 ``None``（调用方失败关闭，不拿别的产品顶上）。
+    BOM 行缺 → 返回的 ``bom_lines`` 为空列表（由调用方决定 blocked，两者文案不同）。
+    """
+    request = state.get("request", {})
+    if not product_code:
+        return None
+    bom_lines = (read_approved_bom(state)
+                 or _bom_lines_from_entities(state, product_code)
+                 or (request.get("bom_lines") if isinstance(request.get("bom_lines"), list)
+                     else []))
+    facts: dict[str, Any] = {
+        "product_code": product_code,
+        "bom_lines": bom_lines,
+        "routing_steps": (read_approved_route(state)
+                          or _route_steps_from_entities(state, product_code)),
+        # 库存事实（D5/D6）：有库存走库存成本价；缺料才用下面的采购价
+        "inventory": read_inventory_facts(state),
+        "hour_rate": request.get("hour_rate"),
+        "overhead_rate": request.get("overhead_rate"),
+    }
+    # R1a：M4 采购追踪的实际单价（缺价由 M6 标 cost_incomplete，不编造）
+    facts.update(read_m4_tracking_price_facts(state))
+    return facts
+
+
+def _order_lines_from_order(state: RunState, order: dict[str, Any]) -> list[dict[str, Any]]:
+    """把 M1 订单行归一成审计可用的 ``{product_code, qty, unit_price}``。
+
+    M1 行项的字段名不稳定（``product_code``/``model``/``product_id``、``quantity``/``qty``、
+    ``unit_price``/``price``），此处只做键名归一；**取不到的对客单价不编造**——
+    缺价的行留给内核标 ``incomplete``（审计结论必须是"算不全"，不能是"很赚钱"）。
+    """
+    lines: list[dict[str, Any]] = []
+    for line in read_lines(state):
+        code = str(line.get("product_code") or line.get("model") or line.get("product_id") or "")
+        price = line.get("unit_price", line.get("price"))
+        lines.append({
+            "product_code": code,
+            "qty": line.get("quantity", line.get("qty")),
+            "unit_price": price,
+        })
+    if lines:
+        return lines
+    # 无行项时退回订单头（单产品订单；缺价同样不编造）
+    if str(order.get("product_code") or ""):
+        return [{"product_code": str(order.get("product_code") or ""),
+                 "qty": order.get("order_qty") or order.get("quantity"),
+                 "unit_price": order.get("unit_price", order.get("price"))}]
+    return []
+
+
+def _basis_rows_from_reports(state: RunState) -> list[dict[str, Any]]:
+    """从 M0 canonical 的报工事实（``production_daily_report``）聚合分摊基准。
+
+    canonical 报工只有 ``quantity``（无工时/人数），故只产出 ``quantity`` 基准；
+    费用若按工时/人数分摊，该产品会进 ``missing_basis_value``（**不推算、不编造**）。
+    """
+    totals: dict[str, float] = {}
+    order: list[str] = []
+    for row in _flatten_entities(_read_m0_entities(state, "production_daily_report")):
+        code = str(row.get("product_code") or "").strip()
+        if not code:
+            continue
+        try:
+            qty = float(row.get("quantity") or row.get("total_quantity") or 0)
+        except (TypeError, ValueError):
+            continue
+        if code not in totals:
+            order.append(code)
+            totals[code] = 0.0
+        totals[code] += qty
+    return [{"product_code": code, "quantity": round(totals[code], 6)} for code in order]
+
+
+def _basis_rows_from_order_lines(state: RunState) -> list[dict[str, Any]]:
+    """兜底：用订单行的产品数量当分摊基准（产量口径；缺报工事实时的降级来源）。"""
+    request = state.get("request", {})
+    lines = list(read_lines(state))
+    if not lines:
+        explicit = request.get("order_lines")
+        lines = [line for line in explicit if isinstance(line, dict)] \
+            if isinstance(explicit, list) else []
+    totals: dict[str, float] = {}
+    order: list[str] = []
+    for line in lines:
+        code = str(line.get("product_code") or line.get("model") or "").strip()
+        if not code:
+            continue
+        try:
+            qty = float(line.get("quantity") or line.get("qty") or 0)
+        except (TypeError, ValueError):
+            continue
+        if code not in totals:
+            order.append(code)
+            totals[code] = 0.0
+        totals[code] += qty
+    return [{"product_code": code, "quantity": round(totals[code], 6)} for code in order]
+
+
 # ---------------------------------------------------------------------------
 # 主链 payload 装配
 # ---------------------------------------------------------------------------
@@ -1619,15 +1725,13 @@ def bridge_payload(state: RunState, tool: str) -> dict[str, Any]:
     if tool == "save_costing_snapshot":
         order = read_order(state)
         product_code = str(order.get("product_code") or request.get("product_code") or "")
-        if not product_code:
+        facts = _assemble_costing_facts(state, product_code)
+        if facts is None:
             return blocked(state, source_module="m1", tool=tool,
                            missing_fields=["订单 header.product_code（或 request.product_code）"],
                            required_tool="ingest_document",
                            recovery="请先完成 M1 解析/复核或显式给出产品编码，成本对象不能缺")
-        bom_lines = (read_approved_bom(state)
-                     or _bom_lines_from_entities(state, product_code)
-                     or (request.get("bom_lines") if isinstance(request.get("bom_lines"), list)
-                         else []))
+        bom_lines = facts["bom_lines"]
         if not bom_lines:
             return blocked(state, source_module="m2", tool=tool,
                            missing_fields=["已批准 BOM 行"],
@@ -1639,19 +1743,12 @@ def bridge_payload(state: RunState, tool: str) -> dict[str, Any]:
                            missing_fields=["request.period（账期 YYYY-MM）"],
                            required_tool="save_costing_snapshot",
                            recovery="成本快照必须落在明确账期上；请给出 period 或订单交期")
-        routing_steps = read_approved_route(state) or _route_steps_from_entities(state, product_code)
         payload = {
+            **facts,
             "period": period,
             "order_id": str(order.get("order_id") or request.get("order_id") or ""),
-            "product_code": product_code,
             "batch_no": str(request.get("batch_no") or ""),
             "quantity": order.get("order_qty") or order.get("quantity"),
-            "bom_lines": bom_lines,
-            "routing_steps": routing_steps,
-            # 库存事实（D5/D6）：有库存走库存成本价；缺料才用下面的采购价
-            "inventory": read_inventory_facts(state),
-            "hour_rate": request.get("hour_rate"),
-            "overhead_rate": request.get("overhead_rate"),
         }
         # R1a：M4 采购追踪的实际单价（缺价由 M6 标 cost_incomplete，不编造）
         payload.update(read_m4_tracking_price_facts(state))
@@ -1675,4 +1772,65 @@ def bridge_payload(state: RunState, tool: str) -> dict[str, Any]:
                            required_tool="save_costing_snapshot",
                            recovery="月结必须指定账期；请给出 period 或先落一版该期间快照")
         return {"period": period}
+    if tool == "get_product_cost":
+        order = read_order(state)
+        product_code = str(request.get("product_code") or order.get("product_code") or "")
+        facts = _assemble_costing_facts(state, product_code)
+        if facts is None:
+            return blocked(state, source_module="m1", tool=tool,
+                           missing_fields=["product_code（订单 header 或显式参数）"],
+                           required_tool="ingest_document",
+                           recovery="成本对象不能缺；请给出产品编码或先完成 M1 解析")
+        if not facts["bom_lines"]:
+            return blocked(state, source_module="m2", tool=tool,
+                           missing_fields=["已批准 BOM 行"],
+                           required_tool="run_bom_sop_workflow",
+                           recovery="请先完成工程 Gate 批准 BOM（或显式给出 bom_lines）再算成本")
+        return facts
+    if tool == "audit_order_cost":
+        order = read_order(state)
+        order_lines = request.get("order_lines")
+        if not isinstance(order_lines, list) or not order_lines:
+            order_lines = _order_lines_from_order(state, order)
+        if not order_lines:
+            return blocked(state, source_module="m1", tool=tool,
+                           missing_fields=["订单行（product_code/qty/unit_price）"],
+                           required_tool="ingest_document",
+                           recovery="审计需要订单行事实（产品/数量/对客单价）；请先完成 M1 解析或显式给出 order_lines")
+        products: dict[str, Any] = {}
+        for code in dict.fromkeys(str(line.get("product_code") or "") for line in order_lines
+                                  if isinstance(line, dict)):
+            if not code:
+                continue
+            facts = _assemble_costing_facts(state, code)
+            if facts is not None and facts["bom_lines"]:
+                products[code] = facts
+        payload: dict[str, Any] = {
+            "order_id": str(order.get("order_id") or request.get("order_id") or ""),
+            "order_lines": order_lines,
+            "products": products,
+        }
+        for key in ("unit_costs", "min_margin_rate"):
+            if request.get(key) not in (None, ""):
+                payload[key] = request[key]
+        return payload
+    if tool == "allocate_expenses":
+        expenses = request.get("expenses")
+        basis_source = "explicit"
+        if not isinstance(expenses, list) or not expenses:
+            # 费用事实的唯一主 = M0 canonical（D4/D-020）；装配层读、并在此拆信封
+            expenses = _flatten_entities(_read_m0_entities(state, "expense"))
+            basis_source = "canonical" if expenses else "missing"
+        basis_rows = request.get("basis_rows")
+        if not isinstance(basis_rows, list) or not basis_rows:
+            basis_rows = _basis_rows_from_reports(state) or _basis_rows_from_order_lines(state)
+        payload = {
+            "expenses": expenses,
+            "basis_rows": basis_rows if isinstance(basis_rows, list) else [],
+            "basis_source": basis_source,
+        }
+        for key in ("period", "allocation_basis"):
+            if request.get(key) not in (None, ""):
+                payload[key] = request[key]
+        return payload
     return {}

@@ -24,9 +24,10 @@ def test_specs_loaded_count(registry):
     F-008（M6 财务，2026-09-13）B0b 新增 4 件（m0_expenses_import / m0_delivery_notes_import /
     list_expenses / list_delivery_notes）→ 123；B1 第二批新增 6 件成本账工具
     （save_costing_snapshot / confirm_costing_snapshot / close_month_costing /
-    list_costing_snapshots / get_costing_snapshot / list_month_costing，registry-manifests/m6.json）
-    → 129。"""
-    assert len(registry.specs) == 129
+    list_costing_snapshots / get_costing_snapshot / list_month_costing）→ 129；
+    B1 第三批新增 3 件内核读工具（get_product_cost / audit_order_cost / allocate_expenses，
+    纯算数不写库）→ 132。"""
+    assert len(registry.specs) == 132
 
 
 def test_deprecated_and_unbound_never_visible(registry):

@@ -26,8 +26,17 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from .m6_cost import compute_material_cost, compute_process_cost
-from .m6_defaults import DEFAULT_VALUATION_PRICE_SOURCE, PENDING_FINANCE_CONFIRMATION
+from .m6_cost import (
+    audit_order_cost,
+    compute_expense_allocation,
+    compute_material_cost,
+    compute_process_cost,
+)
+from .m6_defaults import (
+    DEFAULT_MIN_MARGIN_RATE,
+    DEFAULT_VALUATION_PRICE_SOURCE,
+    PENDING_FINANCE_CONFIRMATION,
+)
 from .m6_price_source import (
     price_for,
     purchase_prices_from_tracking,
@@ -193,20 +202,13 @@ def _next_snapshot_id(store: M6Store, period: str, order_id: str, batch_no: str,
     return f"M6-{period}-{order_id or 'NA'}-{batch_no or 'NA'}-v{len(same) + 1}"
 
 
-async def m6_save_costing_snapshot(payload: dict[str, Any],
-                                   ctx: dict[str, Any]) -> dict[str, Any]:
-    """`save_costing_snapshot`（**propose 段**）：按 D5 定价 → 算成本 → 落 ``trial`` 快照。
+def _cost_breakdown(payload: dict[str, Any]) -> dict[str, Any]:
+    """**共用的成本预算**（D5 定价 → 材料/人工/制费 → 缺口 → 口径痕）。
 
-    只写 ``status=trial``（不进月末汇总、不构成正式成本），因此**不触门**；
-    「正式成本」由 `confirm_costing_snapshot` + `_apply_m6_costing_confirm` 落。
+    为什么抽出来：`save_costing_snapshot`（propose 落快照）与 `get_product_cost`
+    （当场算/报价预览）必须是**同一套口径**——否则"D8 当场算 vs 账上正式成本"
+    会因为两条实现漂移而给出不同数字。两条路径都调本函数。
     """
-    period = str(payload.get("period") or "").strip()
-    if not period:
-        return _fail("INVALID_INPUT", "缺少 period（账期 YYYY-MM）", ctx, "m6-save")
-    tenant_id = _tenant(ctx)
-    order_id = str(payload.get("order_id") or "")
-    product_code = str(payload.get("product_code") or "")
-    batch_no = str(payload.get("batch_no") or "")
     bom_lines = payload.get("bom_lines") if isinstance(payload.get("bom_lines"), list) else []
     routing_steps = (payload.get("routing_steps")
                      if isinstance(payload.get("routing_steps"), list) else [])
@@ -227,21 +229,58 @@ async def m6_save_costing_snapshot(payload: dict[str, Any],
         missing_inputs.append({"reason": "missing_bom_lines"})
     if not routing_steps:
         missing_inputs.append({"reason": "missing_routing_steps"})
-    cost_incomplete = bool(
-        missing_inputs or material["cost_incomplete"] or process["cost_incomplete"]
-        or resolved["cost_incomplete"])
-
-    quantity = _num_optional(payload.get("quantity"))
     unit_cost = round(
         _num(material["unit_material_cost"]) + _num(process["unit_labor_cost"])
         + _num(process["unit_overhead_cost"]), 4)
+    return {
+        "bom_lines": bom_lines,
+        "routing_steps": routing_steps,
+        "hour_rate": hour_rate,
+        "overhead_rate": overhead_rate,
+        "resolved": resolved,
+        "material": material,
+        "process": process,
+        "unit_cost": unit_cost,
+        "missing_inputs": missing_inputs,
+        "cost_incomplete": bool(
+            missing_inputs or material["cost_incomplete"] or process["cost_incomplete"]
+            or resolved["cost_incomplete"]),
+        "assumptions": _assumptions(valuation_price_source, hour_rate, overhead_rate),
+        "price_source": facts_source,
+    }
+
+
+async def m6_save_costing_snapshot(payload: dict[str, Any],
+                                   ctx: dict[str, Any]) -> dict[str, Any]:
+    """`save_costing_snapshot`（**propose 段**）：按 D5 定价 → 算成本 → 落 ``trial`` 快照。
+
+    只写 ``status=trial``（不进月末汇总、不构成正式成本），因此**不触门**；
+    「正式成本」由 `confirm_costing_snapshot` + `_apply_m6_costing_confirm` 落。
+    """
+    period = str(payload.get("period") or "").strip()
+    if not period:
+        return _fail("INVALID_INPUT", "缺少 period（账期 YYYY-MM）", ctx, "m6-save")
+    tenant_id = _tenant(ctx)
+    order_id = str(payload.get("order_id") or "")
+    product_code = str(payload.get("product_code") or "")
+    batch_no = str(payload.get("batch_no") or "")
+
+    breakdown = _cost_breakdown(payload)
+    resolved = breakdown["resolved"]
+    material = breakdown["material"]
+    process = breakdown["process"]
+    missing_inputs = breakdown["missing_inputs"]
+    cost_incomplete = breakdown["cost_incomplete"]
+    unit_cost = breakdown["unit_cost"]
+    assumptions = breakdown["assumptions"]
+
+    quantity = _num_optional(payload.get("quantity"))
     total_cost = round(unit_cost * (quantity or 0.0), 4)
 
-    assumptions = _assumptions(valuation_price_source, hour_rate, overhead_rate)
     resolved_evidence = {
-        "price_source": facts_source,
-        "bom_line_count": len(bom_lines),
-        "routing_step_count": len(routing_steps),
+        "price_source": breakdown["price_source"],
+        "bom_line_count": len(breakdown["bom_lines"]),
+        "routing_step_count": len(breakdown["routing_steps"]),
         "available_stock_lines": sum(1 for row in resolved["lines"]
                                      if row.get("source_kind") == "stock"),
         "purchase_price_lines": sum(1 for row in resolved["lines"]
@@ -266,7 +305,8 @@ async def m6_save_costing_snapshot(payload: dict[str, Any],
         product_code=product_code, batch_no=batch_no, quantity=quantity,
         unit_cost=unit_cost, total_cost=total_cost, basis=str(resolved["basis"]),
         cost_incomplete=cost_incomplete,
-        lines=_cost_lines(resolved, process, product_code, hour_rate, overhead_rate),
+        lines=_cost_lines(resolved, process, product_code,
+                          breakdown["hour_rate"], breakdown["overhead_rate"]),
         evidence=resolved_evidence, task_id=str((ctx or {}).get("task_id") or ""),
         tenant_id=tenant_id)
     if not saved.get("success"):
@@ -415,6 +455,148 @@ async def m6_list_month_costing(payload: dict[str, Any],
                 "period": period}, ctx, "m6-list-month")
 
 
+# ---------------------------------------------------------------------------
+# 内核读工具（纯算数，不写库）：产品成本 / 订单成本审计 / 费用分摊
+# ---------------------------------------------------------------------------
+
+async def m6_get_product_cost(payload: dict[str, Any],
+                              ctx: dict[str, Any]) -> dict[str, Any]:
+    """`get_product_cost`：当场算一个产品的单台成本（**试算/报价预览**，不落库）。
+
+    D8 的「当场算」与 `save_costing_snapshot` 的试算快照**共用 `_cost_breakdown`**
+    ——同一套 D5 口径，避免两个数字漂移。缺价/缺工时照样标 `cost_incomplete`，
+    不给 0 冒充（报价时若见 `cost_incomplete=True`，这笔报价的依据是不全的）。
+    """
+    product_code = str(payload.get("product_code") or "").strip()
+    if not product_code:
+        return _fail("INVALID_INPUT", "缺少 product_code", ctx, "m6-product-cost")
+    breakdown = _cost_breakdown(payload)
+    resolved = breakdown["resolved"]
+    data = {
+        "product_code": product_code,
+        "unit_cost": breakdown["unit_cost"],
+        "material": breakdown["material"],
+        "process": breakdown["process"],
+        "unit_material_cost": breakdown["material"]["unit_material_cost"],
+        "unit_labor_cost": breakdown["process"]["unit_labor_cost"],
+        "unit_overhead_cost": breakdown["process"]["unit_overhead_cost"],
+        "basis": str(resolved["basis"]),
+        "cost_incomplete": breakdown["cost_incomplete"],
+        "missing": resolved["missing"],
+        "missing_inputs": breakdown["missing_inputs"],
+        "assumptions": breakdown["assumptions"],
+        "price_source": breakdown["price_source"],
+        "lines": resolved["lines"],          # 行级价格来源（哪行走库存、哪行走采购）
+    }
+    return _ok(data, ctx, "m6-product-cost", evidence=[
+        _evidence(f"product:{product_code}",
+                  f"当场算单台成本（不落库）：单价口径={resolved['basis']}，"
+                  f"cost_incomplete={breakdown['cost_incomplete']}")])
+
+
+async def m6_audit_order_cost(payload: dict[str, Any],
+                              ctx: dict[str, Any]) -> dict[str, Any]:
+    """`audit_order_cost`：订单成本审计与毛利核算（确定性、无写操作）。
+
+    单位成本来源两级（与老仓 `m6_service` 同口径）：
+    1. `unit_costs` 显式给出（如来自已确认的账上成本）优先；
+    2. 未覆盖的产品据 `products[code]` 的 BOM/工艺/费率**当场滚动**（走同一套
+       `_cost_breakdown`）。
+
+    缺数量/单价/单位成本的行进 `incomplete`，`status` 取 `cost_incomplete`
+    （不编造、也不把「算不全」当「盈利」）。
+    """
+    order_id = str(payload.get("order_id") or "")
+    order_lines = payload.get("order_lines") if isinstance(payload.get("order_lines"), list) else []
+    unit_costs = payload.get("unit_costs") if isinstance(payload.get("unit_costs"), dict) else {}
+    products = payload.get("products") if isinstance(payload.get("products"), dict) else {}
+    min_margin_rate = (payload.get("min_margin_rate")
+                       if payload.get("min_margin_rate") not in (None, "")
+                       else DEFAULT_MIN_MARGIN_RATE)
+
+    rolled: dict[str, Any] = {}
+    roll_missing: list[dict[str, Any]] = []
+    for code in dict.fromkeys(
+            str(line.get("product_code") or "") for line in order_lines
+            if isinstance(line, dict)):
+        if not code or code in unit_costs:
+            continue
+        spec = products.get(code) if isinstance(products.get(code), dict) else {}
+        if not spec and payload.get("bom_lines"):
+            # 单产品订单的便捷路径：顶层事实即该产品的成本事实
+            spec = {"bom_lines": payload.get("bom_lines"),
+                    "routing_steps": payload.get("routing_steps"),
+                    "hour_rate": payload.get("hour_rate"),
+                    "overhead_rate": payload.get("overhead_rate")}
+        if not spec:
+            roll_missing.append({"product_code": code, "reason": "missing_product_facts"})
+            continue
+        breakdown = _cost_breakdown(spec)
+        unit_costs = {**unit_costs, code: {
+            "material": breakdown["material"]["unit_material_cost"],
+            "labor": breakdown["process"]["unit_labor_cost"],
+            "overhead": breakdown["process"]["unit_overhead_cost"],
+        }}
+        rolled[code] = {"unit_cost": breakdown["unit_cost"],
+                        "cost_incomplete": breakdown["cost_incomplete"],
+                        "assumptions": breakdown["assumptions"]}
+
+    result = audit_order_cost(order_lines, unit_costs, min_margin_rate=min_margin_rate)
+    # 滚动出来的产品若成本不全，整单状态必须显式降级（不得当"算完了"）
+    if any(item.get("cost_incomplete") for item in rolled.values()):
+        result["status"] = "cost_incomplete"
+    incomplete = list(result.get("incomplete") or [])
+    for code, item in rolled.items():
+        if item.get("cost_incomplete"):
+            incomplete.append({"reason": "rolled_unit_cost_incomplete", "product_code": code})
+    data = {**result, "order_id": order_id,
+            "unit_costs": {code: {"material": _num(cost.get("material")),
+                                  "labor": _num(cost.get("labor")),
+                                  "overhead": _num(cost.get("overhead"))}
+                           for code, cost in unit_costs.items() if isinstance(cost, dict)},
+            "rolled_products": sorted(rolled), "cost_incomplete": bool(incomplete),
+            "min_margin_rate": _num(min_margin_rate),
+            "missing": (result.get("incomplete") or []) + roll_missing,
+            "assumptions": _assumptions(None, None, None)}
+    return _ok(data, ctx, "m6-audit-order", evidence=[
+        _evidence(f"order:{order_id or 'NA'}",
+                  f"订单成本审计：status={result['status']}，"
+                  f"滚动产品 {sorted(rolled) or '（无，全部用 unit_costs）'}，"
+                  f"缺口 {len(incomplete)} 项")])
+
+
+async def m6_allocate_expenses(payload: dict[str, Any],
+                               ctx: dict[str, Any]) -> dict[str, Any]:
+    """`allocate_expenses`：按口径把费用分摊到产品（确定性、无写操作）。
+
+    事实来源：`expenses`（默认由装配层从 M0 canonical 的 `expense` 实体读入，
+    信封已在装配侧拆开）与 `basis_rows`（产量/工时/人数/订单数基准）。
+    **不落库**——分摊结果只作分析；要进账用 `save_costing_snapshot`。
+
+    口径痕：分摊基准未显式指定时取口径层默认且在 `assumptions` 标
+    `assumed=True`；装配层另把 `basis_source`（explicit/canonical/missing）
+    写回，避免"基准数据到底哪来的"说不清（内核默认值只说 explicit）。
+    """
+    expenses = payload.get("expenses") if isinstance(payload.get("expenses"), list) else []
+    basis_rows = payload.get("basis_rows") if isinstance(payload.get("basis_rows"), list) else []
+    period = str(payload.get("period") or "")
+    if period:
+        expenses = [row for row in expenses
+                    if isinstance(row, dict) and str(row.get("period") or "") == period]
+    allocation_basis = payload.get("allocation_basis")
+    result = compute_expense_allocation(expenses, basis_rows,
+                                       allocation_basis=allocation_basis)
+    basis_source = str(payload.get("basis_source") or "explicit")
+    assumptions = {**(result.get("assumptions") or {}), "basis_source": basis_source}
+    data = {**result, "period": period, "basis_source": basis_source,
+            "assumptions": assumptions}
+    return _ok(data, ctx, "m6-allocate-expenses", evidence=[
+        _evidence(f"expense:{period or 'all'}",
+                  f"费用分摊：合计 {result['total_expense']} / 已分摊 "
+                  f"{result['total_allocated']}，基准来源={basis_source}，"
+                  f"cost_incomplete={result['cost_incomplete']}")])
+
+
 M6_HANDLERS: dict[str, Any] = {
     "save_costing_snapshot": m6_save_costing_snapshot,
     "confirm_costing_snapshot": m6_confirm_costing_snapshot,
@@ -422,4 +604,8 @@ M6_HANDLERS: dict[str, Any] = {
     "list_costing_snapshots": m6_list_costing_snapshots,
     "get_costing_snapshot": m6_get_costing_snapshot,
     "list_month_costing": m6_list_month_costing,
+    # 内核读工具（纯算数，不写库，因此无门）
+    "get_product_cost": m6_get_product_cost,
+    "audit_order_cost": m6_audit_order_cost,
+    "allocate_expenses": m6_allocate_expenses,
 }

@@ -316,6 +316,215 @@
       },
       "execution": "sync",
       "local_only": true
+    },
+    {
+      "name": "get_product_cost",
+      "description": "当场算出一个产品的**单台成本**（材料 + 人工 + 制费），不落库、不进账——即 D8 的「试算／报价预览」。与 save_costing_snapshot 共用同一套 D5 口径（有库存走库存成本价、缺料走实际采购价、两者都无则标 cost_incomplete 不编造），所以预览数与随后的试算快照一致。当用户问「这个产品做一台要多少钱」「报个价之前先算成本」时使用；要落成一版可追溯的试算快照请用 save_costing_snapshot，要正式成本请用 confirm_costing_snapshot。入口定位：纯算数读工具（无副作用、无门），行级价格来源（哪行走库存/哪行走采购）在 lines 里逐行给出。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m6/v1/product-cost",
+        "timeout_s": 30
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "product_code"
+        ],
+        "properties": {
+          "product_code": {
+            "type": "string",
+            "description": "产品编码（成本对象）。"
+          },
+          "bom_lines": {
+            "type": "array",
+            "description": "BOM 行事实（装配层给，勿手填）：[{material_code, qty_per, unit_price, loss_rate}]。",
+            "items": {
+              "type": "object"
+            }
+          },
+          "routing_steps": {
+            "type": "array",
+            "description": "工艺路线工序事实：[{operation_id, standard_minutes}]（分钟）。",
+            "items": {
+              "type": "object"
+            }
+          },
+          "hour_rate": {
+            "type": "number",
+            "description": "人工费率（元/小时）。口径值：缺失即标 cost_incomplete，不编造默认费率。"
+          },
+          "overhead_rate": {
+            "type": "number",
+            "description": "制造费率（元/小时）。口径值，同 hour_rate。"
+          },
+          "inventory": {
+            "type": "array",
+            "description": "库存事实：[{material_code, available_qty, stock_class}]；态缺失/未知时不猜「有库存」，回落采购价。",
+            "items": {
+              "type": "object"
+            }
+          },
+          "purchase_tracking_rows": {
+            "type": "array",
+            "description": "M4 采购追踪行（装配层从 list_m4_tracking 取）：实际单价事实。",
+            "items": {
+              "type": "object"
+            }
+          },
+          "purchase_order_items": {
+            "type": "array",
+            "description": "M4 采购单行项（仅用于 purchase_order_item_id → 料号映射）。",
+            "items": {
+              "type": "object"
+            }
+          },
+          "purchase_price_facts": {
+            "type": "object",
+            "description": "已解析的采购价源（{料号: {unit_price, source_ref}} 或解析器输出）。"
+          },
+          "valuation_price_source": {
+            "type": "string",
+            "enum": [
+              "bom_price",
+              "latest_purchase_price"
+            ],
+            "description": "库存成本价的估价价源口径（默认 bom_price，未给出即标 assumed=true）。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "execution": "sync",
+      "local_only": true
+    },
+    {
+      "name": "audit_order_cost",
+      "description": "订单成本审计与毛利核算：按订单行滚动收入、直接材料、直接人工、制造费用，算出毛利与毛利率，判定 passed / low_profit / loss / cost_incomplete。当用户问「这单赚不赚」「毛利多少」「这个价能做吗」时使用。单位成本两级来源：unit_costs 显式给出（如已确认的账上成本）优先；未覆盖的产品据 products 里的 BOM/工艺/费率当场滚动。缺数量/单价/单位成本的行进 incomplete 且 status 取 cost_incomplete——**「算不全」绝不当成「盈利」**。纯算数读工具，无副作用、无门；要进账的成本请走 confirm_costing_snapshot。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m6/v1/order-cost-audit",
+        "timeout_s": 60
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "order_lines"
+        ],
+        "properties": {
+          "order_id": {
+            "type": "string",
+            "description": "订单号（回显与证据引用）。"
+          },
+          "order_lines": {
+            "type": "array",
+            "minItems": 1,
+            "description": "订单行：必填 product_code/qty/unit_price（unit_price = 对客单价）。缺任一即该行进 incomplete。",
+            "items": {
+              "type": "object"
+            }
+          },
+          "unit_costs": {
+            "type": "object",
+            "description": "产品单位成本映射 {product_code: {material, labor, overhead}}；缺某产品时据 products 滚动。"
+          },
+          "products": {
+            "type": "object",
+            "description": "产品成本事实 {product_code: {bom_lines, routing_steps, hour_rate, overhead_rate}}（装配层给）。"
+          },
+          "min_margin_rate": {
+            "type": "number",
+            "minimum": 0,
+            "default": 0.15,
+            "description": "最低毛利率门槛（默认取口径层 DEFAULT_MIN_MARGIN_RATE）。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "execution": "sync",
+      "local_only": true
+    },
+    {
+      "name": "allocate_expenses",
+      "description": "把费用（社保/税费/电费/运费/伙食费/杂项）按口径分摊到产品：Σ(费用 × 产品基准 ÷ 基准合计)。当用户问「这些费用怎么摊到产品上」「按产量/工时/人数摊一下」时使用。事实来源：expenses（默认由装配层从 M0 canonical 的 expense 实体读入）与 basis_rows（产量/工时/人数/订单数基准）；分摊口径未显式指定时取口径层默认并在 assumptions 标 assumed=true，基准数据来源以 basis_source（explicit/canonical/missing）明示。只读、不落库——分摊结果仅作分析，要进账的成本走 save/confirm_costing_snapshot；缺金额或未知口径计入 missing，不用 0 冒充。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m6/v1/expense-allocation",
+        "timeout_s": 60
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "expenses": {
+            "type": "array",
+            "description": "费用事实：[{category, amount, period, allocation_basis?}]（装配层从 canonical expense 读入；单条可自带口径覆盖全局）。",
+            "items": {
+              "type": "object"
+            }
+          },
+          "basis_rows": {
+            "type": "array",
+            "description": "分摊基准行：[{product_code, quantity, labor_hours, headcount, order_count}]（装配层从报工事实/订单行聚合）。",
+            "items": {
+              "type": "object"
+            }
+          },
+          "period": {
+            "type": "string",
+            "description": "账期过滤（可选，如 2026-09）：只分摊该期间的费用。"
+          },
+          "allocation_basis": {
+            "type": "string",
+            "enum": [
+              "quantity",
+              "labor_hours",
+              "headcount",
+              "order_count"
+            ],
+            "description": "全局分摊口径（默认取口径层 DEFAULT_ALLOCATION_BASIS，未给出即标 assumed=true）。"
+          },
+          "basis_source": {
+            "type": "string",
+            "enum": [
+              "explicit",
+              "canonical",
+              "missing"
+            ],
+            "description": "基准数据来源（装配层写入，用于口径溯源）。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "execution": "sync",
+      "local_only": true
     }
   ]
 }

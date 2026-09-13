@@ -274,6 +274,12 @@ RULES: dict[str, list[Check]] = {
         Check("data.pending_close", "eq", True, action="gate:finance",
               reason="月账冻结是生效写，须 finance 门人工批准后由 _apply_m6_close_month 落库"),
     ],
+    # 三个内核读工具（`get_product_cost` / `audit_order_cost` / `allocate_expenses`）
+    # **刻意不登记门**：纯算数、不落库（当场算 = D8 的「试算/报价预览」，分摊结果只作分析）。
+    # 与 `save_costing_snapshot` 的"无门"不同性质：那一个是**写** trial 草稿而无门（D-008），
+    # 这三个连库都不碰，因此既不触门也不报 W2（合同 `side_effect=none`）。
+    # 缺数一律以 `cost_incomplete` + `missing` 表达（不编造、也不开补数门——
+    # "某期间还没有费用事实"是正常状态，不是装配缺口）。
 }
 
 #: M0 canonical 写工具（rows-S1「审查需补」）：成功即开 candidate 门。
