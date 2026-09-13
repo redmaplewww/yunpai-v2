@@ -2014,6 +2014,10 @@ HANDLERS = {
     "get_quotation": _m6("get_quotation"),
     "save_statement": _m6("save_statement"),
     "list_statements": _m6("list_statements"),
+    # 凭据（B3）：get_delivery_note 读 canonical 送货单（唯一主，M6 不建 create）；
+    # generate_statement 依据送货单/入库事实生成对账明细（纯算数、不落库、无门）。
+    "get_delivery_note": _m6("get_delivery_note"),
+    "generate_statement": _m6("generate_statement"),
     # M0 自描述表识别（agent-driven file recognition，确定性安全网）
     "sample_file": sample_file,
     "ingest_recognized": ingest_recognized,

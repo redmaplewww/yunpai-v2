@@ -27,8 +27,9 @@ def test_specs_loaded_count(registry):
     list_costing_snapshots / get_costing_snapshot / list_month_costing）→ 129；
     B1 第三批新增 3 件内核读工具（get_product_cost / audit_order_cost / allocate_expenses，
     纯算数不写库）→ 132；B2 新增 6 件单据台账工具（报价单 generate_quotation / save_quotation /
-    list_quotations / get_quotation + 对账单 save_statement / list_statements）→ 138。"""
-    assert len(registry.specs) == 138
+    list_quotations / get_quotation + 对账单 save_statement / list_statements）→ 138；
+    B3 新增 2 件凭据工具（get_delivery_note / generate_statement）→ 140。"""
+    assert len(registry.specs) == 140
 
 
 def test_deprecated_and_unbound_never_visible(registry):

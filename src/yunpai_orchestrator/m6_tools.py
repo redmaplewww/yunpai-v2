@@ -715,19 +715,21 @@ def _statement_totals(payload: dict[str, Any]) -> dict[str, Any]:
     对账明细优先取 `transactions`（direction in/out）；只给 `lines`/`amount` 时原样采信
     调用方给的事实（不做二次推算）。
     """
-    transactions = payload.get("transactions")
-    if isinstance(transactions, list) and transactions:
-        computed = compute_statement(payload.get("opening_balance"), transactions)
-        return {**computed, "source": "transactions",
+    detail = _statement_transactions(payload)
+    if detail["transactions"]:
+        computed = compute_statement(payload.get("opening_balance"), detail["transactions"])
+        return {**computed, "source": detail["source"],
                 "lines": computed["lines"],
-                "amount": computed["closing_balance"]}
+                "amount": computed["closing_balance"],
+                "missing": detail["missing"]}
     lines = payload.get("lines") if isinstance(payload.get("lines"), list) else []
     return {"opening_balance": _num(payload.get("opening_balance")), "inflow": None,
             "outflow": None,
             "closing_balance": (_num_optional(payload.get("amount"))
                                 if payload.get("amount") not in (None, "") else None),
             "lines": lines, "source": "explicit_lines" if lines else "missing",
-            "amount": _num_optional(payload.get("amount"))}
+            "amount": _num_optional(payload.get("amount")),
+            "missing": detail["missing"]}
 
 
 async def m6_generate_quotation(payload: dict[str, Any],
@@ -860,12 +862,121 @@ async def m6_get_quotation(payload: dict[str, Any],
     return _ok({"quotation": doc}, ctx, "m6-get-quotation")
 
 
+def _statement_transactions(payload: dict[str, Any]) -> dict[str, Any]:
+    """对账明细（B3）：**显式 transactions > 依据事实生成**（客户=送货单／供应商=入库）。
+
+    领域映射只在这一处实现（装配层只给事实）：
+    - 客户对账：`delivery_note` 的**外发货**（direction=out）→ 明细 ``in``（应收增加），
+      ref = 送货单号；单据没给 amount 的**不进明细**（计 missing，不编造金额）。
+    - 供应商对账：M4 **已入库**追踪行 → 明细 ``in``（应付增加），ref = 采购单号；
+      金额**不取**追踪行的 `unit_price`——那是单价不是入库金额，拿来当对账金额是错的，
+      故依据行须自带 ``amount``，否则计 missing。
+    """
+    explicit = payload.get("transactions")
+    if isinstance(explicit, list) and explicit:
+        return {"transactions": [tx for tx in explicit if isinstance(tx, dict)],
+                "source": "explicit", "missing": []}
+    statement_type = str(payload.get("statement_type") or "customer")
+    transactions: list[dict[str, Any]] = []
+    missing: list[dict[str, Any]] = []
+    if statement_type == "supplier":
+        rows = payload.get("purchase_receipts")
+        rows = rows if isinstance(rows, list) else []
+        if not rows:
+            missing.append({"reason": "missing_purchase_receipts"})
+        for index, row in enumerate(rows, start=1):
+            if not isinstance(row, dict):
+                continue
+            ref = str(row.get("purchase_order_no") or row.get("purchase_order_id") or "")
+            amount = _num_optional(row.get("amount"))
+            if amount is None:
+                missing.append({"line": index, "reason": "missing_receipt_amount", "ref": ref})
+                continue
+            transactions.append({"direction": "in", "amount": amount, "ref": ref})
+        source = "purchase_receipts" if transactions else "missing"
+    else:
+        notes = payload.get("delivery_notes")
+        notes = notes if isinstance(notes, list) else []
+        if not notes:
+            missing.append({"reason": "missing_delivery_notes"})
+        for index, note in enumerate(notes, start=1):
+            if not isinstance(note, dict):
+                continue
+            if str(note.get("direction") or "out") != "out":
+                continue                    # 只认外发货（入库单不是应收依据）
+            ref = str(note.get("note_no") or note.get("canonical_key") or "")
+            amount = _num_optional(note.get("amount"))
+            if amount is None:
+                missing.append({"line": index, "reason": "missing_delivery_amount", "ref": ref})
+                continue
+            transactions.append({"direction": "in", "amount": amount, "ref": ref})
+        source = "delivery_notes" if transactions else "missing"
+    return {"transactions": transactions, "source": source, "missing": missing}
+
+
+async def m6_generate_statement(payload: dict[str, Any],
+                                ctx: dict[str, Any]) -> dict[str, Any]:
+    """`generate_statement`（B3 升级）：**依据送货单/采购入库生成**对账明细并算期末。
+
+    纯算数、**不落库**（落库走 `save_statement`，那条链才有 finance 门）。依据取不到时
+    以 `basis_source=missing` + `missing` 明示——**绝不出具一份金额为零的空对账单**。
+    """
+    counterparty = str(payload.get("counterparty_code") or payload.get("supplier_code") or "")
+    if not counterparty:
+        return _fail("INVALID_INPUT", "需要 counterparty_code（对账对象）", ctx,
+                     "m6-generate-statement")
+    statement_type = str(payload.get("statement_type") or "customer")
+    detail = _statement_transactions(payload)
+    if not detail["transactions"]:
+        return _fail("INVALID_INPUT", "对账依据不足，无法生成对账单（不编造明细）", ctx,
+                     "m6-generate-statement",
+                     data={"statement_type": statement_type, "counterparty_code": counterparty,
+                           "basis_source": detail["source"], "missing": detail["missing"]})
+    computed = compute_statement(payload.get("opening_balance"), detail["transactions"])
+    data = {
+        "statement_type": statement_type, "counterparty_code": counterparty,
+        "date_from": str(payload.get("date_from") or ""),
+        "date_to": str(payload.get("date_to") or ""),
+        "basis_source": detail["source"],
+        **computed,
+        "transactions": detail["transactions"], "missing": detail["missing"],
+    }
+    return _ok(data, ctx, "m6-generate-statement", evidence=[
+        _evidence(f"statement:{counterparty}",
+                  f"对账单预览（不落库）：依据={detail['source']}，明细 "
+                  f"{len(detail['transactions'])} 条，期末 {computed['closing_balance']}")])
+
+
+async def m6_get_delivery_note(payload: dict[str, Any],
+                               ctx: dict[str, Any]) -> dict[str, Any]:
+    """`get_delivery_note`：按单号读回 canonical 送货单（**M6 只读，不建 create**）。
+
+    读的是 M0 canonical（唯一主，D4/D-020）；签收面字段（`signed_by`/
+    `warehouse_confirmed_by`/`qc_status`）原样照抄回读、不加工。事实由装配层读取
+    （`delivery_note_bodies`，**已拆信封**），本层只做匹配与回读。
+    """
+    note_no = str(payload.get("note_no") or "").strip()
+    if not note_no:
+        return _fail("INVALID_INPUT", "需要 note_no（送货单号）", ctx, "m6-get-delivery-note")
+    rows = payload.get("delivery_notes")
+    rows = rows if isinstance(rows, list) else []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if note_no in (str(row.get("note_no") or ""), str(row.get("canonical_key") or "")):
+            return _ok({"delivery_note": row}, ctx, "m6-get-delivery-note", evidence=[
+                _evidence(f"delivery_note:{note_no}", "canonical 送货单回读（只读）")])
+    return _fail("NOT_FOUND", f"送货单 {note_no} 不存在", ctx, "m6-get-delivery-note",
+                 data={"note_no": note_no})
+
+
 async def m6_save_statement(payload: dict[str, Any],
                             ctx: dict[str, Any]) -> dict[str, Any]:
     """`save_statement`（**propose 段**）：期末 = 期初 + Σin − Σout → 落 ``trial`` 草稿。
 
     `statement_type`（customer/supplier）决定方向：我方对客户 = 出（``out``）、
     对供应商 = 入（``in``）；也可显式给 ``direction`` 覆盖。
+    明细来源见 `_statement_transactions`（B3 起可依据送货单/入库事实自动生成）。
     """
     totals = _statement_totals(payload)
     if totals["source"] == "missing":
@@ -882,13 +993,15 @@ async def m6_save_statement(payload: dict[str, Any],
                         "opening_balance": totals["opening_balance"],
                         "inflow": totals["inflow"], "outflow": totals["outflow"],
                         "closing_balance": totals["closing_balance"],
-                        "totals_source": totals["source"]})
+                        "totals_source": totals["source"],
+                        "missing": totals.get("missing") or []})
     if data.get("success"):
         data["data"].update({"statement_type": statement_type,
                              "opening_balance": totals["opening_balance"],
                              "inflow": totals["inflow"], "outflow": totals["outflow"],
                              "closing_balance": totals["closing_balance"],
-                             "totals_source": totals["source"]})
+                             "totals_source": totals["source"],
+                             "missing": totals.get("missing") or []})
     return data
 
 
@@ -922,4 +1035,7 @@ M6_HANDLERS: dict[str, Any] = {
     "get_quotation": m6_get_quotation,
     "save_statement": m6_save_statement,
     "list_statements": m6_list_statements,
+    # 凭据（B3）：送货单只读回读 + 对账明细依据生成（纯算数，不落库）
+    "get_delivery_note": m6_get_delivery_note,
+    "generate_statement": m6_generate_statement,
 }

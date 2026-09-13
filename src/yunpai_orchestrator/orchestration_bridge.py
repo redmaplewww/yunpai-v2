@@ -1069,6 +1069,32 @@ def read_m4_supply_snapshot(state: RunState) -> dict[str, Any]:
 _M4_PRICE_ROW_LIMIT = 10_000
 
 
+def read_m4_tracking_rows(state: RunState) -> list[dict[str, Any]]:
+    """M4B 采购追踪**原始行**（含 `arrival_status`/`supplier_name`/`unit_price`）。
+
+    `read_m4_tracking_price_facts` 只用其中的单价；`generate_statement` 的供应商侧
+    还要用「是否已入库」判定对账明细，故单出一个原始行读口（同一份事实，不重复读库）。
+    """
+    request = state.get("request", {})
+    rows = request.get("purchase_tracking_rows")
+    if isinstance(rows, list) and rows:
+        return [row for row in rows if isinstance(row, dict)]
+    from pathlib import Path
+
+    m4b_db = str(request.get("m4b_db_path") or os.getenv("YUNPAI_M4B_DB")
+                 or "runtime/yunpai-m4b.sqlite")
+    if not Path(m4b_db).exists():
+        return []
+    try:
+        from .m4b_store import M4BStore
+
+        tracking, _total = M4BStore(m4b_db).tracking_list(
+            str(state.get("tenant_id") or "default"), offset=0, limit=_M4_PRICE_ROW_LIMIT)
+    except Exception:  # noqa: BLE001 —— 读不到按「无事实」处理，调用方标 missing
+        return []
+    return [row for row in tracking if isinstance(row, dict)]
+
+
 def read_m4_tracking_price_facts(state: RunState) -> dict[str, Any]:
     """R1a 价源事实：从 M4B 采购追踪取**实际采购单价**行（D-007）。
 
@@ -1083,25 +1109,14 @@ def read_m4_tracking_price_facts(state: RunState) -> dict[str, Any]:
     ``cost_incomplete``（绝不编造价）。
     """
     request = state.get("request", {})
-    rows = request.get("purchase_tracking_rows")
-    if isinstance(rows, list) and rows:
-        items = request.get("purchase_order_items")
-        return {"purchase_tracking_rows": rows,
-                "purchase_order_items": items if isinstance(items, list) else []}
+    rows = read_m4_tracking_rows(state)
+    if not rows:
+        return {}
+    items = request.get("purchase_order_items")
+    if isinstance(items, list) and items:
+        return {"purchase_tracking_rows": rows, "purchase_order_items": items}
     from pathlib import Path
 
-    m4b_db = str(request.get("m4b_db_path") or os.getenv("YUNPAI_M4B_DB")
-                 or "runtime/yunpai-m4b.sqlite")
-    if not Path(m4b_db).exists():
-        return {}
-    tenant_id = str(state.get("tenant_id") or "default")
-    try:
-        from .m4b_store import M4BStore
-
-        tracking, _total = M4BStore(m4b_db).tracking_list(
-            tenant_id, offset=0, limit=_M4_PRICE_ROW_LIMIT)
-    except Exception:  # noqa: BLE001 —— 读不到价源按「缺价」处理，调用方标 cost_incomplete
-        return {}
     order_items: list[dict[str, Any]] = []
     m4_db = str(request.get("m4_db_path") or os.getenv("YUNPAI_M4_DB")
                 or "runtime/yunpai-m4.sqlite")
@@ -1110,13 +1125,45 @@ def read_m4_tracking_price_facts(state: RunState) -> dict[str, Any]:
             from .m4_store import M4Store
 
             listed = M4Store(m4_db).list_purchase_orders(
-                page=1, page_size=1000, status=None, supplier_name=None, tenant_id=tenant_id)
+                page=1, page_size=1000, status=None, supplier_name=None,
+                tenant_id=str(state.get("tenant_id") or "default"))
             for order in listed.get("items") or []:
                 order_items.extend(
                     item for item in (order.get("items") or []) if isinstance(item, dict))
         except Exception:  # noqa: BLE001 —— 映射缺失时 M6 只能按行项 id 键查价（保守但可用）
             order_items = []
-    return {"purchase_tracking_rows": tracking, "purchase_order_items": order_items}
+    return {"purchase_tracking_rows": rows, "purchase_order_items": order_items}
+
+
+def delivery_note_bodies(state: RunState,
+                         counterparty_code: str = "") -> list[dict[str, Any]]:
+    """M0 canonical 送货单（**已拆信封**，业务字段在顶层）。
+
+    拆信封必须做：`_read_m0_entities` 返回的是 ``{canonical_key, **envelope}``，业务体
+    嵌套在 ``payload`` 里——直接按 ``note_no``/``counterparty_code`` 过滤永远匹配不到
+    （B0b 的两个读工具就是这么恒返回空的）。这里复用桥接既有的 `_flatten_entities`
+    （同一处归一化，不另写一份）。
+    """
+    rows = _flatten_entities(_read_m0_entities(state, "delivery_note"))
+    if counterparty_code:
+        rows = [row for row in rows
+                if str(row.get("counterparty_code") or "") == counterparty_code]
+    return rows
+
+
+def received_purchase_rows(state: RunState, supplier: str = "") -> list[dict[str, Any]]:
+    """M4B 追踪里「已入库」的行（供应商侧对账依据：入库 → 应付增加）。
+
+    匹配口径：``supplier_name`` 或 ``supplier_code`` 等于给定供应商键——M4 追踪落的是
+    供应商**名**，而往来单位常用**编码**，两者都认；取不到就返回空，由调用方标 missing。
+    """
+    rows = [row for row in read_m4_tracking_rows(state)
+            if str(row.get("arrival_status") or "") == "received"]
+    if supplier:
+        rows = [row for row in rows
+                if supplier in (str(row.get("supplier_name") or ""),
+                                str(row.get("supplier_code") or ""))]
+    return rows
 
 
 def _period_of(value: Any) -> str:
@@ -1292,6 +1339,19 @@ def forward_m1_order_canonical(files: list[dict[str, Any]], m1_output: Any) -> l
     raw = json.dumps({"records": records}, ensure_ascii=False).encode("utf-8")
     return [{"filename": "order-canonical.json", "content_type": "application/json",
              "content_b64": _b64.b64encode(raw).decode()}]
+
+
+def _statement_basis(state: RunState, request: dict[str, Any],
+                     counterparty: str) -> dict[str, Any]:
+    """对账依据事实（B3）：客户侧取 canonical 送货单、供应商侧取 M4 已入库追踪行。
+
+    只**取事实**，不做方向映射也不推断金额——「发货 → 应收增加」这类领域语义留在 M6
+    （`m6_tools._statement_transactions`），一处实现，免得两边各算一套。
+    """
+    statement_type = str(request.get("statement_type") or "customer")
+    if statement_type == "supplier":
+        return {"purchase_receipts": received_purchase_rows(state, counterparty)}
+    return {"delivery_notes": delivery_note_bodies(state, counterparty)}
 
 
 def _quotation_facts(state: RunState) -> dict[str, Any]:
@@ -1880,18 +1940,41 @@ def bridge_payload(state: RunState, tool: str) -> dict[str, Any]:
                            missing_fields=["counterparty_code（对账对象）"],
                            required_tool="save_statement",
                            recovery="对账单必须指定往来单位；请给出 counterparty_code")
+        basis = _statement_basis(state, request, counterparty)
+        has_basis = any(isinstance(value, list) and value for value in basis.values())
         has_detail = (isinstance(request.get("transactions"), list) and request["transactions"]) \
-            or (isinstance(request.get("lines"), list) and request["lines"])
+            or (isinstance(request.get("lines"), list) and request["lines"]) or has_basis
         if not has_detail:
             return blocked(state, source_module="m6", tool=tool,
-                           missing_fields=["对账明细（transactions 或 lines）"],
+                           missing_fields=["对账明细（transactions/lines 或可用的送货单/入库依据）"],
                            required_tool="save_statement",
-                           recovery="对账单必须有对账依据：请给出 transactions（direction/amount）；"
-                                    "B3 的 generate_statement 将从送货单/采购单自动生成")
-        payload = {"counterparty_code": counterparty}
+                           recovery="对账单必须有对账依据：请给出 transactions，"
+                                    "或先在 canonical 落该往来单位的送货单（客户侧）/"
+                                    "M4 入库记录（供应商侧）")
+        payload = {"counterparty_code": counterparty, **basis}
         for key in ("doc_no", "statement_type", "direction", "doc_date", "opening_balance",
                     "transactions", "lines", "amount", "source_ref"):
             if request.get(key) not in (None, "", [], {}):
+                payload[key] = request[key]
+        return payload
+    # ── M6 凭据（B3）：送货单读取 + 对账明细生成 ────────────────────────────
+    if tool == "get_delivery_note":
+        note_no = str(request.get("note_no") or "")
+        if not note_no:
+            return blocked(state, source_module="m6", tool=tool,
+                           missing_fields=["note_no（送货单号）"],
+                           required_tool="get_delivery_note",
+                           recovery="按单号读回送货单；请给出 note_no")
+        return {"note_no": note_no,
+                "delivery_notes": delivery_note_bodies(state,
+                                                       str(request.get("counterparty_code") or ""))}
+    if tool == "generate_statement":
+        payload = dict(_statement_basis(state, request,
+                                        str(request.get("counterparty_code")
+                                            or request.get("supplier_code") or "")))
+        for key in ("statement_type", "counterparty_code", "supplier_code", "period",
+                    "date_from", "date_to", "opening_balance"):
+            if request.get(key) not in (None, ""):
                 payload[key] = request[key]
         return payload
     return {}

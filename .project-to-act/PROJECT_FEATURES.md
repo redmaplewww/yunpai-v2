@@ -21,7 +21,7 @@
 | F-004 | 工具与技能逐个审查注册 | docs/01 §12 | P0 | 已完成 | 代码验收（E-004） | F-003 | 119 工具（115 manifest+4 本地）+8 技能台账全登记，五项 checklist 逐个过审 | docs/02 §7 | E-004 |
 | F-005 | 自进化接线与三缺口补全 | docs/01 §10 | P1 | 已规划 | - | F-004 | 观察/注入消费/使用反馈/红线周期四接缝测试全绿 | docs/02 §11 | - |
 | F-006 | 联调验收（W913 双路径） | docs/01 §13 | P0 | 已完成 | 验收通过（E-006） | F-005 | workflow `run-b84071dc…`（explicit）与 free `run-3f6b9383…`（route.source=llm）均 completed + `m5.released` + `is_current_head=true`，判定器 PASS 5/5（K1–K6 修复后打通） | docs/02 §13 | E-006 |
-| F-008 | M6 财务：成本核算链 + 成本明细账 | M6-开发计划-v2口径-20260913.md §0 | P0 | 进行中 | 增量验收（E-008） | F-004 | 成本链可按 D5/D6 口径算出并落快照；三段式（先批准后落库）生效；试算/正式分离；28 件工具注册（已 19/28：B0b 4 + B1 9 + B2 6） | M6-开发计划 §3–§7 | E-008 |
+| F-008 | M6 财务：成本核算链 + 成本明细账 | M6-开发计划-v2口径-20260913.md §0 | P0 | 进行中 | 增量验收（E-008） | F-004 | 成本链可按 D5/D6 口径算出并落快照；三段式（先批准后落库）生效；试算/正式分离；28 件工具注册（已 21/28：B0b 4 + B1 9 + B2 6 + B3 2） | M6-开发计划 §3–§7 | E-008 |
 
 ## 功能变更历史
 
@@ -37,3 +37,4 @@
 | 2026-09-13 | F-008 | 第二批增量：**B0b** `expense`/`delivery_note` 实体接入面（`ENTITY_TYPES`/`FACADE_KINDS`/`list_expenses`/`list_delivery_notes`/`stock_class` 四态）；**R1a** 缺料价源解析器（读口订正为 M4B 采购追踪行的 `unit_price`，采购单不含价）；**B1-1** `m6_store` 存储层 + `finance` 门型；**B1-2** 成本账 6 工具（`registry-manifests/m6.json`）+ `graph.py` 三个 `_apply_m6_*` commit 钩子 + R1a 装配接线；工具面 119→**129** | 三段式（D-005）从条文落成可执行实现：试算只写 `trial` 不进汇总、`finance` 门批准后由 commit 钩子翻 `confirmed`、`reject` 不产生生效行（5 条断言全过）；「试算快照无门」以显式 `review_gate="none"` + 一条 W2 表达（**D-008**）；顺带修掉 B0b 读口信封未归一导致 `list_expenses` 恒空的 bug | E-008 | 用户会话裁定 D-008（2026-09-13） |
 | 2026-09-14 | F-008 | 第三批增量（**B1 全批收口**）：`get_product_cost` / `audit_order_cost` / `allocate_expenses` 三件纯算数读工具（工具面 129→**132**），抽 `_cost_breakdown` 共用预算 + `_assemble_costing_facts` 共用装配 | 当场算（D8 试算/报价预览）与试算快照必须同口径——抽共用函数并由测试断言单位成本相等，防"预览与落库漂移"；`audit_order_cost` 的"算不全"强制降级 `cost_incomplete`（绝不当盈利）；三件只读不落库、无门，缺数一律以 `cost_incomplete` 表达 | E-008 | Agent（按 D-005/D-006 口径实现） |
 | 2026-09-14 | F-008 | 第四批增量（**B2 单据台账**）：`generate_quotation` / `save_quotation` / `list_quotations` / `get_quotation` + `save_statement` / `list_statements`（工具面 132→**138**） | 单据类写走三段式（propose 落 `trial` 草稿 → `finance` 门 → `_apply_m6_document_commit` 翻 `confirmed`），reject 保留草稿但不生效；**缺成本不报价**（行内三项成本未给且滚不出来时该行进 missing 且不计入合计，堵掉老仓"缺成本当 0 报出成本为零的价"）；同号单据显式拒绝、单号确定性派生 | E-008 | Agent（按 D-005 三段式实现） |
+| 2026-09-14 | F-008 | 第五批增量（**B3 凭据**）：`get_delivery_note`（读 canonical 送货单）+ `generate_statement`（依据送货单/入库生成对账明细，客户/供应商双向），`save_statement` 因此可自动取依据（工具面 138→**140**） | 凭据层补齐：对账不再要求人手工抄 transactions；**依据缺失即拒出单**（basis_source=missing，绝不给零金额空对账单）；供应商侧不把追踪行的 `unit_price`（单价）当入库金额（依据行须自带 amount）；读口**必须拆信封**由真 canonical 往返测试锁住（B0b 同类 bug 不再重演） | E-008 | Agent（按 D4/D-020 与 D9 实现） |

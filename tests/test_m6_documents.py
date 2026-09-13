@@ -185,7 +185,9 @@ async def test_save_statement_computes_balance_and_direction(registry, tmp_path)
     assert data["closing_balance"] == 1300.0
     assert data["amount"] == 1300.0
     assert data["direction"] == "out"                    # customer → 我方对外
-    assert data["totals_source"] == "transactions"
+    # B3 起明细来源统一由 `_statement_transactions` 判定：显式给的就是 "explicit"
+    # （依据自动生成时为 delivery_notes / purchase_receipts）
+    assert data["totals_source"] == "explicit"
 
     # supplier 方向相反
     supplier = await registry.call("save_statement", {

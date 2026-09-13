@@ -875,6 +875,127 @@
       },
       "execution": "sync",
       "local_only": true
+    },
+    {
+      "name": "get_delivery_note",
+      "description": "按单号读回一张送货单（canonical `delivery_note`，唯一主——M6 侧只读、不建 create）。当用户问「这张送货单的内容」「某单号签收了没」时使用。返回单号、往来单位、日期、方向、金额、明细与签收面字段（signed_by/signed_at/warehouse_confirmed_by/qc_status），原样照抄不加工。只读、无门；不存在返回 NOT_FOUND（不编造）。入口定位：对账依据的单据级读口；要按客户/订单批量筛选用 list_delivery_notes，要据送货单出对账单用 generate_statement。",
+      "http": {
+        "method": "GET",
+        "path": "/api/m6/v1/delivery-notes/{note_no}",
+        "timeout_s": 60
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "note_no": {
+            "type": "string",
+            "description": "送货单号（canonical 业务键）。"
+          },
+          "counterparty_code": {
+            "type": "string",
+            "description": "往来单位编码（可选，用于收窄装配范围）。"
+          }
+        },
+        "required": [
+          "note_no"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "execution": "sync",
+      "local_only": true
+    },
+    {
+      "name": "generate_statement",
+      "description": "**依据送货单/采购入库事实生成**对账明细并算期末（期初 + Σin − Σout）——纯算数、不落库，即「对账单预览」。当用户问「和这个客户对一下账」「这个月该收多少」时使用。客户对账取 canonical 送货单的外发货（→ 明细 in，增加应收）；供应商对账取 M4 已入库追踪行（→ 明细 in，增加应付）；也可显式给 transactions 覆盖。**依据不足时明示 missing 并拒（basis_source=missing），绝不出具一份金额为零的空对账单**。要看数用本工具，要落成可确认的凭据用 save_statement（那条链才有 finance 门）。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m6/v1/generate_statement",
+        "timeout_s": 60
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "counterparty_code": {
+            "type": "string",
+            "description": "往来单位编码（客户或供应商）。"
+          },
+          "supplier_code": {
+            "type": "string",
+            "description": "供应商编码（counterparty_code 的别名）。"
+          },
+          "statement_type": {
+            "type": "string",
+            "enum": [
+              "customer",
+              "supplier"
+            ],
+            "description": "对账类型（默认 customer）：customer 取送货单、supplier 取已入库采购追踪。"
+          },
+          "period": {
+            "type": "string",
+            "description": "账期（可选，如 2026-09，供装配层过滤依据）。"
+          },
+          "date_from": {
+            "type": "string",
+            "description": "起始日期（可选，回显与证据用）。"
+          },
+          "date_to": {
+            "type": "string",
+            "description": "截止日期（可选，回显与证据用）。"
+          },
+          "opening_balance": {
+            "type": "number",
+            "description": "期初余额（元）。"
+          },
+          "transactions": {
+            "type": "array",
+            "description": "显式对账明细（覆盖依据生成）：[{direction(in|out), amount, ref?}]。",
+            "items": {
+              "type": "object"
+            }
+          },
+          "delivery_notes": {
+            "type": "array",
+            "description": "送货单依据（装配层给，勿手填）。",
+            "items": {
+              "type": "object"
+            }
+          },
+          "purchase_receipts": {
+            "type": "array",
+            "description": "采购入库依据（装配层给，勿手填；须自带 amount，追踪行的 unit_price 是单价不是入库金额）。",
+            "items": {
+              "type": "object"
+            }
+          }
+        },
+        "required": [
+          "counterparty_code"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "execution": "sync",
+      "local_only": true
     }
   ]
 }

@@ -298,6 +298,9 @@ RULES: dict[str, list[Check]] = {
     # 缺数一律以 `cost_incomplete` + `missing` 表达（不编造、也不开补数门——
     # "某期间还没有费用事实"是正常状态，不是装配缺口）。
     # `generate_quotation`（报价预览）同样无门：纯算数，落草稿才是写（save_quotation）。
+    # B3 的 `get_delivery_note`（读 canonical）与 `generate_statement`（依据送货单/入库
+    # 生成对账明细）同理——不落库即无门；依据不足时以 `missing`/`basis_source=missing`
+    # 表达（不开补数门：单据事实还没落 canonical 属于业务进度，不是装配缺口）。
 }
 
 #: M0 canonical 写工具（rows-S1「审查需补」）：成功即开 candidate 门。
