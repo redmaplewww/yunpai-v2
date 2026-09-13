@@ -420,6 +420,45 @@ def _apply_m6_document_commit(state: dict[str, Any], gate: dict[str, Any],
                               "at": now_iso()}]}
 
 
+def _apply_m6_asset_commit(state: dict[str, Any], gate: dict[str, Any],
+                           *, actor: str = "") -> dict[str, Any] | None:
+    """finance 门批准 → 资产台账修订 ``trial → confirmed``（B4）。
+
+    台账按 `asset_code + revision` 存多版，本钩子只翻**被审阅的那一条修订**
+    （`asset_id`）——propose 从不覆盖已确认原值，所以"先批准后落库"对台账也成立。
+    """
+    if str(gate.get("type")) != "finance":
+        return None
+    tool = str(gate.get("tool") or "")
+    envelope = (state.get("outputs") or {}).get(tool)
+    if not isinstance(envelope, dict):
+        return None
+    data = envelope.get("data") if isinstance(envelope.get("data"), dict) else {}
+    if not data.get("pending_asset_commit"):
+        return None
+    asset_id = str(data.get("asset_id") or "")
+    if not asset_id:
+        return None
+    tenant_id = str(state.get("tenant_id") or "default")
+    result = _m6_store(state).confirm_asset(asset_id, actor=actor, tenant_id=tenant_id)
+    if not result.get("success"):
+        code = str(result.get("code") or "CONFIRM_FAILED")
+        return {"m6_conflict": {"code": code, "asset_id": asset_id, "tool": tool},
+                "trace_events": [{"event": "m6.asset_confirm_conflict", "code": code,
+                                  "asset_id": asset_id, "at": now_iso()}]}
+    stamped = {**data, "status": "confirmed", "pending_asset_commit": False,
+               "confirmed_by": actor, "committed_by": "finance_gate",
+               "effective_revision": result.get("revision")}
+    evidence = list(envelope.get("evidence") or []) + [{
+        "module": "m6", "source_ref": f"asset:{asset_id}",
+        "evidence_ref": f"m6:{asset_id}:confirm",
+        "detail": f"Finance Gate 批准 → 资产台账修订 v{result.get('revision')} "
+                  f"trial→confirmed（actor={actor or 'human'}）"}]
+    return {"outputs": {tool: {**envelope, "data": stamped, "evidence": evidence}},
+            "trace_events": [{"event": "m6.asset_confirmed", "asset_id": asset_id,
+                              "revision": result.get("revision"), "at": now_iso()}]}
+
+
 def _apply_candidate_approval(state: dict[str, Any], gate: dict[str, Any], *, actor: str) -> dict[str, Any] | None:
     """M0 candidate 门批准的副作用：把该批次未裁决候选落为 approved（人工裁决落地）。
 
@@ -566,7 +605,7 @@ def reviewer_check_node(deps: GraphDeps) -> Callable:
                 # 冲突（期间已冻结、快照消失）不抛异常——撤回本次授权 + 步骤退回 pending，
                 # finance 门重新打开，人工可恢复（抛错会把 resume 值固化进 checkpoint）。
                 for _m6_hook in (_apply_m6_costing_confirm, _apply_m6_close_month,
-                                 _apply_m6_document_commit):
+                                 _apply_m6_document_commit, _apply_m6_asset_commit):
                     applied = _m6_hook(state, gate,
                                        actor=str((decision or {}).get("actor") or ""))
                     if applied is None:

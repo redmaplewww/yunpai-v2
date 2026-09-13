@@ -996,6 +996,156 @@
       },
       "execution": "sync",
       "local_only": true
+    },
+    {
+      "name": "get_asset_ledger",
+      "description": "读资产台账（模具/机器）：**生效值与待确认草稿分开列**——effective 才是账上事实，pending 只是等人批的草稿（三段式台账读口，成本/效益分摊只认 effective）。当用户问「这台模具的台账」「资产原值多少」时使用。给了 asset_code 就返回该资产的生效值/待确认值/全部修订历史；不给则列出全部资产的生效与待确认状态。只读、无门；不在台账返回 NOT_FOUND。",
+      "http": {
+        "method": "GET",
+        "path": "/api/m6/v1/asset-ledger",
+        "timeout_s": 60
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "asset_code": {
+            "type": "string",
+            "description": "资产编码（可选；不给则列出全部资产）。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "execution": "sync",
+      "local_only": true
+    },
+    {
+      "name": "upsert_asset_ledger",
+      "description": "登记/更新一条资产台账（propose 段）：追加一条 **status=trial 的修订草稿** 并请财务确认——**不覆盖**已确认的原值（台账按 asset_code+revision 存多版，生效行 = 最大的已确认修订）。当用户说「这台设备原值 5 万，登记一下」时使用。已有待确认修订时拒绝再叠一版（ASSET_PENDING_EXISTS）——先让人把上一版批了或撤了。缺原值即不登金额（`acquisition_cost` 可空，不编造）。入口定位：资产档案的唯一写口；查台账用 get_asset_ledger，分摊效益用 compute_asset_benefit。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m6/v1/upsert_asset_ledger",
+        "timeout_s": 60
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "asset_code": {
+            "type": "string",
+            "description": "资产编码（模具/机器编号）。"
+          },
+          "asset_name": {
+            "type": "string",
+            "description": "资产名称。"
+          },
+          "category": {
+            "type": "string",
+            "description": "资产类别（如 mold/machine；开放文本）。"
+          },
+          "acquisition_cost": {
+            "type": "number",
+            "description": "原值/购置成本（元）。**事实值**：不知道就别给（不编造），效益分摊时会标 missing_asset_cost。"
+          },
+          "acquired_at": {
+            "type": "string",
+            "description": "购入日期（YYYY-MM-DD）。"
+          },
+          "useful_life_months": {
+            "type": "integer",
+            "description": "预计使用月数（折旧口径，待财务确认）。"
+          },
+          "salvage_value": {
+            "type": "number",
+            "description": "残值（元）。"
+          },
+          "source_ref": {
+            "type": "string",
+            "description": "来源引用（如采购单号/发票号），随台账入库供追溯。"
+          },
+          "evidence": {
+            "type": "object",
+            "description": "调用方附带的证据块（如凭证扫描件引用）。"
+          }
+        },
+        "required": [
+          "asset_code"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "execution": "sync",
+      "local_only": true,
+      "side_effect": "local_write",
+      "review_gate": "finance"
+    },
+    {
+      "name": "compute_asset_benefit",
+      "description": "把模具/机器成本按口径分摊到产品（DEV-15）：口径 quantity/labor_hours/order_count（默认 quantity，待财务确认）。当用户问「这台模具的成本摊到哪些产品上」「模具投入产出」时使用。资产成本两级来源：显式 asset_cost 优先；未给则**取台账生效行的原值**（只看 effective，不看草稿），来源以 asset_cost_source 明示。台账里没有、也没显式成本的资产进 missing_asset_cost（不编造）。纯算数只读、无门、不落库。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m6/v1/compute_asset_benefit",
+        "timeout_s": 60
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "asset_usage": {
+            "type": "array",
+            "minItems": 1,
+            "description": "资产使用记录：[{asset_code, product_code, quantity?, labor_hours?, order_id?}]。",
+            "items": {
+              "type": "object"
+            }
+          },
+          "asset_cost": {
+            "type": "object",
+            "description": "资产成本映射 {asset_code: 总成本}（可选；不给则取台账生效原值）。"
+          },
+          "allocation_basis": {
+            "type": "string",
+            "enum": [
+              "quantity",
+              "labor_hours",
+              "order_count"
+            ],
+            "description": "分摊口径（默认取口径层 DEFAULT_ALLOCATION_BASIS，未给出即标 assumed=true）。"
+          }
+        },
+        "required": [
+          "asset_usage"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "execution": "sync",
+      "local_only": true
     }
   ]
 }

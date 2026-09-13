@@ -28,6 +28,7 @@ from typing import Any
 
 from .m6_cost import (
     audit_order_cost,
+    compute_asset_benefit,
     compute_expense_allocation,
     compute_material_cost,
     compute_process_cost,
@@ -35,6 +36,7 @@ from .m6_cost import (
     compute_statement,
 )
 from .m6_defaults import (
+    DEFAULT_ALLOCATION_BASIS,
     DEFAULT_MIN_MARGIN_RATE,
     DEFAULT_VALUATION_PRICE_SOURCE,
     PENDING_FINANCE_CONFIRMATION,
@@ -1017,6 +1019,128 @@ async def m6_list_statements(payload: dict[str, Any],
                ctx, "m6-list-statements")
 
 
+# ---------------------------------------------------------------------------
+# 资产台账（B4）：模具/机器台账 + 效益分摊
+# ---------------------------------------------------------------------------
+#
+# 修订模型（见 `m6_store` 的 m6_assets）：`asset_code` 下多 revision 共存，
+# **生效行 = revision 最大且已 confirmed**；propose 只追加 trial 修订——所以
+# 「先批准后落库」对台账同样成立：未批准的改动**不会改写账上已确认的原值**。
+
+async def m6_upsert_asset_ledger(payload: dict[str, Any],
+                                 ctx: dict[str, Any]) -> dict[str, Any]:
+    """`upsert_asset_ledger`（**propose 段**）：追加一条资产修订草稿 + 请财务确认。
+
+    入参即「这本台账该长什么样」（原值/购入日/寿命/残值）。已有**待确认修订**时拒绝
+    再叠一版（``ASSET_PENDING_EXISTS``）——先让人把上一版批了或撤了，避免堆草稿。
+    """
+    asset_code = str(payload.get("asset_code") or "").strip()
+    if not asset_code:
+        return _fail("INVALID_INPUT", "需要 asset_code（资产编码）", ctx, "m6-asset")
+    tenant_id = _tenant(ctx)
+    store = _store(ctx)
+    pending = store.pending_asset(asset_code, tenant_id)
+    if pending is not None and not payload.get("replace_pending"):
+        return _fail("ASSET_PENDING_EXISTS",
+                     f"资产 {asset_code} 已有待确认修订 {pending['asset_id']}"
+                     "（先由财务审批或撤回上一版，避免堆草稿）",
+                     ctx, "m6-asset",
+                     data={"asset_code": asset_code, "pending_asset_id": pending["asset_id"]})
+    revision = int(payload.get("revision") or 0) or store.next_asset_revision(asset_code,
+                                                                             tenant_id)
+    asset_id = str(payload.get("asset_id") or "") or f"ASSET-{asset_code}-v{revision}"
+    saved = store.save_asset(
+        asset_id=asset_id, asset_code=asset_code, revision=revision,
+        asset_name=str(payload.get("asset_name") or ""),
+        category=str(payload.get("category") or ""),
+        acquisition_cost=payload.get("acquisition_cost"),
+        acquired_at=str(payload.get("acquired_at") or ""),
+        useful_life_months=payload.get("useful_life_months"),
+        salvage_value=payload.get("salvage_value"),
+        source_ref=str(payload.get("source_ref") or ""),
+        evidence={"revision": revision, "replaces": (pending or {}).get("asset_id"),
+                  **(payload.get("evidence") if isinstance(payload.get("evidence"), dict)
+                     else {})},
+        tenant_id=tenant_id)
+    if not saved.get("success"):
+        return _fail(str(saved.get("code") or "SAVE_FAILED"),
+                     f"资产台账草稿未落库（{saved.get('code')}）", ctx, "m6-asset",
+                     data={"asset_code": asset_code, "asset_id": asset_id})
+    effective = store.effective_asset(asset_code, tenant_id)
+    data = {
+        **saved, "asset_name": str(payload.get("asset_name") or ""),
+        "acquisition_cost": _num_optional(payload.get("acquisition_cost")),
+        # 约定字段：finance 门批准后由 `graph._apply_m6_asset_commit` 据此翻 confirmed
+        "pending_asset_commit": True,
+        "effective_revision": int(effective["revision"]) if effective else None,
+        "effective_acquisition_cost": (_num_optional(effective.get("acquisition_cost"))
+                                       if effective else None),
+    }
+    return _ok(data, ctx, "m6-asset", evidence=[
+        _evidence(f"asset:{asset_code}@v{revision}",
+                  f"资产台账修订草稿（trial）：{asset_code} v{revision}，"
+                  f"原值 {data['acquisition_cost']}，待 finance 门批准后生效")])
+
+
+async def m6_get_asset_ledger(payload: dict[str, Any],
+                              ctx: dict[str, Any]) -> dict[str, Any]:
+    """`get_asset_ledger`：读资产台账——**生效值与待确认草稿分开列**（不混淆）。
+
+    这是三段式台账的读口：`effective` 才是账上事实，`pending` 只是等人批的草稿；
+    成本/效益分摊只认 effective。
+    """
+    store = _store(ctx)
+    tenant_id = _tenant(ctx)
+    asset_code = str(payload.get("asset_code") or "").strip()
+    if asset_code:
+        revisions = store.asset_revisions(asset_code, tenant_id)
+        if not revisions:
+            return _fail("NOT_FOUND", f"资产 {asset_code} 不在台账中", ctx, "m6-get-asset",
+                         data={"asset_code": asset_code})
+        return _ok({"asset_code": asset_code,
+                    "effective": store.effective_asset(asset_code, tenant_id),
+                    "pending": store.pending_asset(asset_code, tenant_id),
+                    "revisions": revisions}, ctx, "m6-get-asset")
+    assets = [{"asset_code": code, "effective": store.effective_asset(code, tenant_id),
+               "pending": store.pending_asset(code, tenant_id)}
+              for code in store.list_asset_codes(tenant_id)]
+    return _ok({"assets": assets, "count": len(assets)}, ctx, "m6-get-asset")
+
+
+async def m6_compute_asset_benefit(payload: dict[str, Any],
+                                   ctx: dict[str, Any]) -> dict[str, Any]:
+    """`compute_asset_benefit`：把资产成本按口径分摊到产品（纯算数，不落库）。
+
+    资产成本两级来源：显式 `asset_cost` 优先；未给则**取台账生效行的原值**
+    （`acquisition_cost`，只看 effective、不看草稿），以 `asset_cost_source` 明示来源。
+    台账里没有、也没显式成本的资产 → 进 `missing_asset_cost`（不编造成本）。
+    """
+    usage = payload.get("asset_usage") if isinstance(payload.get("asset_usage"), list) else []
+    if not usage:
+        return _fail("INVALID_INPUT", "需要 asset_usage（资产使用记录）", ctx, "m6-asset-benefit")
+    ledger_costs: dict[str, float] = {}
+    for row in _store(ctx).list_effective_assets(_tenant(ctx)):
+        cost = _num_optional(row.get("acquisition_cost"))
+        if cost is not None:
+            ledger_costs[str(row.get("asset_code") or "")] = cost
+    explicit = payload.get("asset_cost") if isinstance(payload.get("asset_cost"), dict) else {}
+    asset_cost = {**ledger_costs, **{str(key): _num(value) for key, value in explicit.items()}}
+    allocation_basis = payload.get("allocation_basis")
+    basis = str(allocation_basis or DEFAULT_ALLOCATION_BASIS)
+    result = compute_asset_benefit(usage, asset_cost, allocation_basis=basis)
+    source = "explicit" if explicit else ("ledger" if ledger_costs else "missing")
+    assumptions = {**_assumptions(None, None, None),
+                   "allocation_basis": basis,
+                   "allocation_basis_assumed": allocation_basis in (None, ""),
+                   "asset_cost_source": source}
+    data = {**result, "asset_cost": asset_cost, "asset_cost_source": source,
+            "assumptions": assumptions, "ledger_asset_count": len(ledger_costs)}
+    return _ok(data, ctx, "m6-asset-benefit", evidence=[
+        _evidence("asset:benefit",
+                  f"资产效益分摊：{len(result['allocations'])} 条分摊，"
+                  f"成本来源={source}，cost_incomplete={result['cost_incomplete']}")])
+
+
 M6_HANDLERS: dict[str, Any] = {
     "save_costing_snapshot": m6_save_costing_snapshot,
     "confirm_costing_snapshot": m6_confirm_costing_snapshot,
@@ -1038,4 +1162,8 @@ M6_HANDLERS: dict[str, Any] = {
     # 凭据（B3）：送货单只读回读 + 对账明细依据生成（纯算数，不落库）
     "get_delivery_note": m6_get_delivery_note,
     "generate_statement": m6_generate_statement,
+    # 资产台账（B4）：upsert 走 propose（trial 修订）+ finance 门；读与分摊纯算数
+    "get_asset_ledger": m6_get_asset_ledger,
+    "upsert_asset_ledger": m6_upsert_asset_ledger,
+    "compute_asset_benefit": m6_compute_asset_benefit,
 }

@@ -13,11 +13,17 @@
    `confirm_snapshot` / `confirm_document` 一律拒绝（``MONTH_CLOSED``），
    除非显式重开（本层不提供重开——重开属财务流程决策，需要独立授权）。
 
+## schema 版本政策（B4 起写明）
+
+``SCHEMA_VERSION`` 只在**列语义变更/删除**时 bump（那需要人工迁移，禁止静默升级）。
+**纯新增表**（如 B4 的 `m6_assets` 资产台账）不改版本号：既有库下次连接时
+`CREATE TABLE IF NOT EXISTS` 自动补齐，不会让旧库打不开。
+
 ## 三段式（书二 §6.2.1）在本层的落点
 
 - **propose 段**：`save_snapshot` / `save_document` 只写 ``status=trial``；
-- **commit 段**：`confirm_snapshot` / `confirm_document` 才翻 ``confirmed``
-  （由 `graph.py` 的 `_apply_m6_*` 钩子在人工门批准后调用）。
+- **commit 段**：`confirm_snapshot` / `confirm_document` / `confirm_asset` 才翻
+  ``confirmed``（由 `graph.py` 的 `_apply_m6_*` 钩子在人工门批准后调用）。
 本层**自身不做授权判断**——授权在审核 Agent（`reviewer/gates.py` 的 `finance` 门）。
 """
 
@@ -125,6 +131,30 @@ CREATE TABLE IF NOT EXISTS m6_month_close (
     closed_by  TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (tenant_id, period)
 );
+
+-- 资产台账（B4）：`asset_code` 的多**修订**共存——生效行 = 该 code 下 revision 最大且
+-- status=confirmed 的那条；propose 只新增一条 trial 修订，**绝不覆盖**已确认修订
+-- （否则"先批准后落库"就成了"未批准已改写账上原值"）。
+CREATE TABLE IF NOT EXISTS m6_assets (
+    asset_id    TEXT PRIMARY KEY,
+    tenant_id   TEXT NOT NULL DEFAULT 'default',
+    asset_code  TEXT NOT NULL,
+    revision    INTEGER NOT NULL DEFAULT 1,
+    asset_name  TEXT NOT NULL DEFAULT '',
+    category    TEXT NOT NULL DEFAULT '',
+    acquisition_cost REAL,
+    acquired_at TEXT NOT NULL DEFAULT '',
+    useful_life_months INTEGER,
+    salvage_value REAL,
+    status      TEXT NOT NULL,
+    source_ref  TEXT NOT NULL DEFAULT '',
+    evidence    TEXT NOT NULL DEFAULT '{}',
+    created_at  TEXT NOT NULL,
+    confirmed_at TEXT,
+    confirmed_by TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_m6_assets_code
+    ON m6_assets(tenant_id, asset_code, revision);
 """
 
 
@@ -403,6 +433,116 @@ class M6Store:
         return {"success": True, "snapshot_id": snapshot_id, "status": STATUS_CONFIRMED,
                 "changed": True, "confirmed_at": confirmed_at, "period": snapshot["period"]}
 
+    # ---------- 资产台账（B4）----------
+    #
+    # 修订模型：`asset_code` 下多 revision 共存，**生效行 = revision 最大且已 confirmed**；
+    # propose 只追加一条 trial 修订。这样"先批准后落库"对台账也成立——未批准的改动
+    # 不会改写账上已确认的原值。
+
+    def asset_revisions(self, asset_code: str,
+                        tenant_id: str = "default") -> list[dict[str, Any]]:
+        rows = self._rows(
+            "SELECT * FROM m6_assets WHERE tenant_id=? AND asset_code=?"
+            " ORDER BY revision",
+            (tenant_id, asset_code),
+        )
+        for row in rows:
+            row["evidence"] = _loads(row.get("evidence"), {})
+        return rows
+
+    def get_asset(self, asset_id: str, tenant_id: str = "default") -> dict[str, Any] | None:
+        row = self._row("SELECT * FROM m6_assets WHERE asset_id=? AND tenant_id=?",
+                        (asset_id, tenant_id))
+        if row is not None:
+            row["evidence"] = _loads(row.get("evidence"), {})
+        return row
+
+    def save_asset(self, *, asset_id: str, asset_code: str, revision: int,
+                   asset_name: str = "", category: str = "", acquisition_cost: Any = None,
+                   acquired_at: str = "", useful_life_months: Any = None,
+                   salvage_value: Any = None, source_ref: str = "",
+                   evidence: Any = None, tenant_id: str = "default",
+                   created_at: str | None = None) -> dict[str, Any]:
+        """**propose 段**：追加一条 ``status=trial`` 的资产修订（不覆盖已确认修订）。"""
+        if self.get_asset(asset_id, tenant_id) is not None:
+            return {"success": False, "code": "ASSET_EXISTS", "asset_id": asset_id}
+        created_at = created_at or now_iso()
+        conn = self._connect()
+        try:
+            conn.execute(
+                "INSERT INTO m6_assets(asset_id, tenant_id, asset_code, revision, asset_name,"
+                " category, acquisition_cost, acquired_at, useful_life_months, salvage_value,"
+                " status, source_ref, evidence, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (asset_id, tenant_id, asset_code, int(revision), asset_name, category,
+                 _num(acquisition_cost), acquired_at, _int_or_none(useful_life_months),
+                 _num(salvage_value), STATUS_TRIAL, source_ref, _dumps(evidence), created_at),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return {"success": True, "asset_id": asset_id, "asset_code": asset_code,
+                "revision": int(revision), "status": STATUS_TRIAL}
+
+    def next_asset_revision(self, asset_code: str, tenant_id: str = "default") -> int:
+        rows = self.asset_revisions(asset_code, tenant_id)
+        return (max(int(row.get("revision") or 0) for row in rows) + 1) if rows else 1
+
+    def effective_asset(self, asset_code: str,
+                        tenant_id: str = "default") -> dict[str, Any] | None:
+        """生效行：该 `asset_code` 下 revision 最大且 ``status=confirmed`` 的修订。"""
+        rows = [row for row in self.asset_revisions(asset_code, tenant_id)
+                if row.get("status") == STATUS_CONFIRMED]
+        return rows[-1] if rows else None
+
+    def pending_asset(self, asset_code: str,
+                      tenant_id: str = "default") -> dict[str, Any] | None:
+        """待确认修订：该 `asset_code` 下最新的 ``status=trial`` 行（无则 None）。"""
+        rows = [row for row in self.asset_revisions(asset_code, tenant_id)
+                if row.get("status") == STATUS_TRIAL]
+        return rows[-1] if rows else None
+
+    def list_asset_codes(self, tenant_id: str = "default") -> list[str]:
+        rows = self._rows(
+            "SELECT DISTINCT asset_code FROM m6_assets WHERE tenant_id=? ORDER BY asset_code",
+            (tenant_id,),
+        )
+        return [str(row["asset_code"]) for row in rows]
+
+    def list_effective_assets(self, tenant_id: str = "default") -> list[dict[str, Any]]:
+        """全部生效资产（每个 `asset_code` 一条）——成本侧按 `acquisition_cost` 取数。"""
+        out: list[dict[str, Any]] = []
+        for code in self.list_asset_codes(tenant_id):
+            row = self.effective_asset(code, tenant_id)
+            if row is not None:
+                out.append(row)
+        return out
+
+    def confirm_asset(self, asset_id: str, *, actor: str = "", tenant_id: str = "default",
+                      confirmed_at: str | None = None) -> dict[str, Any]:
+        """**commit 段**：资产修订 ``trial → confirmed``（由 approve 后的钩子调用）。"""
+        row = self.get_asset(asset_id, tenant_id)
+        if row is None:
+            return {"success": False, "code": "NOT_FOUND", "asset_id": asset_id}
+        if row["status"] == STATUS_CONFIRMED:
+            return {"success": True, "asset_id": asset_id, "status": STATUS_CONFIRMED,
+                    "changed": False}
+        confirmed_at = confirmed_at or now_iso()
+        conn = self._connect()
+        try:
+            conn.execute(
+                "UPDATE m6_assets SET status=?, confirmed_at=?, confirmed_by=?"
+                " WHERE asset_id=? AND tenant_id=? AND status=?",
+                (STATUS_CONFIRMED, confirmed_at, actor, asset_id, tenant_id, STATUS_TRIAL),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        return {"success": True, "asset_id": asset_id, "status": STATUS_CONFIRMED,
+                "changed": True, "confirmed_at": confirmed_at,
+                "asset_code": row.get("asset_code"), "revision": row.get("revision")}
+
+    # ---------- 月度冻结 ----------
+
     def list_periods(self, tenant_id: str = "default") -> list[str]:
         """已有账期的期间列表（快照期间 ∪ 已结账期间），倒序——供月度汇总列表用。"""
         rows = self._rows(
@@ -543,6 +683,12 @@ def _num(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _int_or_none(value: Any) -> int | None:
+    """可空整数（有值才转 int；不可解析当缺失，不猜 0）。"""
+    got = _num(value)
+    return int(got) if got is not None else None
 
 
 def _group_by_order(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

@@ -291,6 +291,15 @@ RULES: dict[str, list[Check]] = {
               reason="对账单是双方账务凭据，须 finance 门人工批准后由 "
                      "_apply_m6_document_commit 翻 confirmed"),
     ],
+    # 资产台账写（B4）：同款三段式——propose 只追加 trial 修订（不覆盖已确认原值），
+    # 生效由 approve 后的 `_apply_m6_asset_commit` 执行。
+    "upsert_asset_ledger": [
+        Check("success", "eq", False, action="fail",
+              reason="资产台账修订未落库（已有待确认修订/入参非法）"),
+        Check("data.pending_asset_commit", "eq", True, action="gate:finance",
+              reason="资产原值/折旧口径是账上事实，须 finance 门人工批准后由 "
+                     "_apply_m6_asset_commit 翻 confirmed"),
+    ],
     # 三个内核读工具（`get_product_cost` / `audit_order_cost` / `allocate_expenses`）
     # **刻意不登记门**：纯算数、不落库（当场算 = D8 的「试算/报价预览」，分摊结果只作分析）。
     # 与 `save_costing_snapshot` 的"无门"不同性质：那一个是**写** trial 草稿而无门（D-008），
@@ -298,6 +307,7 @@ RULES: dict[str, list[Check]] = {
     # 缺数一律以 `cost_incomplete` + `missing` 表达（不编造、也不开补数门——
     # "某期间还没有费用事实"是正常状态，不是装配缺口）。
     # `generate_quotation`（报价预览）同样无门：纯算数，落草稿才是写（save_quotation）。
+    # `get_asset_ledger`（读台账）与 `compute_asset_benefit`（分摊，纯算数）同理无门。
     # B3 的 `get_delivery_note`（读 canonical）与 `generate_statement`（依据送货单/入库
     # 生成对账明细）同理——不落库即无门；依据不足时以 `missing`/`basis_source=missing`
     # 表达（不开补数门：单据事实还没落 canonical 属于业务进度，不是装配缺口）。

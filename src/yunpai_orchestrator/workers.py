@@ -2018,6 +2018,11 @@ HANDLERS = {
     # generate_statement 依据送货单/入库事实生成对账明细（纯算数、不落库、无门）。
     "get_delivery_note": _m6("get_delivery_note"),
     "generate_statement": _m6("generate_statement"),
+    # 资产台账（B4）：upsert_asset_ledger 属 propose 段（追加 trial 修订 + 开 finance 门，
+    # 生效由 `_apply_m6_asset_commit` 在 approve 后翻 confirmed）；其余两件纯读/纯算数。
+    "get_asset_ledger": _m6("get_asset_ledger"),
+    "upsert_asset_ledger": _m6("upsert_asset_ledger"),
+    "compute_asset_benefit": _m6("compute_asset_benefit"),
     # M0 自描述表识别（agent-driven file recognition，确定性安全网）
     "sample_file": sample_file,
     "ingest_recognized": ingest_recognized,
