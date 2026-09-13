@@ -69,6 +69,9 @@ class RunStateV2(TypedDict, total=False):
     approvals: list[dict[str, Any]]
     authorized_steps: list[str]
     review_findings: list[dict[str, Any]]  # 新增：规则命中记录（可审计）
+    # 新增（书二 §6.2.1 commit 段）：`_apply_*` 钩子「已生效」的留痕——与 trace 不同，
+    # 这里只记**真的落了库的生效动作**（翻正／冻结／发布）；reject 路径永不写入。
+    review_applied: list[dict[str, Any]]
     # ── 知识（进化闭环）──
     knowledge_context: list[dict[str, Any]]
     knowledge_consumed: bool             # 新增：统筹是否真实消费（缺口②留痕）

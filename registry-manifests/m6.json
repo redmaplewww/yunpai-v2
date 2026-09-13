@@ -1,0 +1,321 @@
+{
+  "module": "m6",
+  "base_url": "",
+  "tools": [
+    {
+      "name": "save_costing_snapshot",
+      "description": "算出一版成本并冻结为**试算快照**（propose 段）：按 D5 口径逐行定价（有库存 → 库存成本价；缺料 → 实际采购价；两者都取不到 → 该行标 cost_incomplete、绝不编造），写入本模块自己的 m6 库，status=trial。试算**不构成正式成本**、不进月末汇总，因此本工具刻意无人工门（合同显式 review_gate=none，理由见账本 D-008）；要让成本进账请随后用 confirm_costing_snapshot（finance 门）。入口定位：这是成本计算链的落库入口；纯算数预览用 get_product_cost/audit_order_cost，月末汇总用 list_month_costing。业务键 order_id+batch_no+period 命中已有快照时返回 duplicate_of 提示（新建/覆盖/查看由人决定，本工具不覆盖）；该期间月账已冻结则拒绝（MONTH_CLOSED）。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m6/v1/costing-snapshots",
+        "timeout_s": 60
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "period"
+        ],
+        "properties": {
+          "period": {
+            "type": "string",
+            "description": "账期（YYYY-MM），例如 2026-09。快照的月结与汇总口径。"
+          },
+          "snapshot_id": {
+            "type": "string",
+            "description": "快照主键。不传时按 period+order_id+batch_no 确定性派生（同键第 N 版）；同键重复计算不覆盖历史快照。"
+          },
+          "order_id": {
+            "type": "string",
+            "description": "订单号（业务键之一）。"
+          },
+          "product_code": {
+            "type": "string",
+            "description": "产品编码（成本对象）。"
+          },
+          "batch_no": {
+            "type": "string",
+            "description": "批次号（业务键之一）。"
+          },
+          "quantity": {
+            "type": "number",
+            "description": "数量：单台单位成本 × 数量 = 总成本。缺失按 0 计（total_cost=0）。"
+          },
+          "bom_lines": {
+            "type": "array",
+            "description": "BOM 行事实（装配层给，勿手填）：[{material_code, qty_per, unit_price, loss_rate}]。unit_price 是 BOM 价（库存口径用），loss_rate 为损耗率小数（0.05=5%）。",
+            "items": {
+              "type": "object"
+            }
+          },
+          "routing_steps": {
+            "type": "array",
+            "description": "工艺路线工序事实：[{operation_id, standard_minutes}]，standard_minutes 以分钟计。缺标准工时计入 incomplete。",
+            "items": {
+              "type": "object"
+            }
+          },
+          "hour_rate": {
+            "type": "number",
+            "description": "人工费率（元/小时）。**口径值**：未给出时按缺失处理（标 cost_incomplete），不编造默认费率。"
+          },
+          "overhead_rate": {
+            "type": "number",
+            "description": "制造费率（元/小时）。口径值，同 hour_rate 口径：缺则标 cost_incomplete。"
+          },
+          "inventory": {
+            "type": "array",
+            "description": "库存事实（装配层给）：[{material_code, available_qty, stock_class}]。stock_class 为库存四态 raw/finished/semi/wip；态缺失或未知时不猜「有库存」，回落实际采购价。",
+            "items": {
+              "type": "object"
+            }
+          },
+          "purchase_tracking_rows": {
+            "type": "array",
+            "description": "M4 采购追踪行（装配层从 list_m4_tracking 取，勿手填）：[{id, purchase_order_no, purchase_order_item_id, supplier_name, promised_date, unit_price, currency}]。单价不可解析的行不入价源。",
+            "items": {
+              "type": "object"
+            }
+          },
+          "purchase_order_items": {
+            "type": "array",
+            "description": "M4 采购单行项（仅用于 purchase_order_item_id → item_code/internal_material_no 映射）。",
+            "items": {
+              "type": "object"
+            }
+          },
+          "purchase_price_facts": {
+            "type": "object",
+            "description": "已解析的采购价源（{material_code: {unit_price, source_ref, ...}} 或 purchase_prices_from_tracking 的输出）。给了就直接用，不再解析 tracking 行。"
+          },
+          "valuation_price_source": {
+            "type": "string",
+            "enum": [
+              "bom_price",
+              "latest_purchase_price"
+            ],
+            "description": "库存成本价的估价价源口径（默认 bom_price）。未给出时按口径层默认并在 assumptions 标 assumed=true。"
+          },
+          "evidence": {
+            "type": "object",
+            "description": "调用方附带的证据块（BOM 版本/齐套快照引用等），随快照入库。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "execution": "sync",
+      "side_effect": "local_write",
+      "review_gate": "none",
+      "local_only": true
+    },
+    {
+      "name": "confirm_costing_snapshot",
+      "description": "发起**成本确认**（trial → confirmed，即「正式成本」落账）：三段式的 commit 段。本工具自身只做前置校验（快照存在、当前为 trial、该期间月账未冻结）并请求人工确认，**不翻状态**；批准后由 _apply_m6_costing_confirm 在 commit 段翻正。开 finance 门（角色 finance-officer/admin，仅 approve/reject），LLM 置信度任何阈值都不得放行。入口定位：试算快照 → 本工具 → 月末汇总只认 confirmed。月账已冻结的期间拒绝确认（MONTH_CLOSED），冻结前遗留的 trial 也不得被翻正。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m6/v1/costing-snapshots/{snapshot_id}/confirm",
+        "timeout_s": 60
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "snapshot_id"
+        ],
+        "properties": {
+          "snapshot_id": {
+            "type": "string",
+            "description": "待确认的快照主键（trial）。"
+          },
+          "note": {
+            "type": "string",
+            "description": "确认说明（随门决策留痕）。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "execution": "sync",
+      "side_effect": "local_write",
+      "review_gate": "finance",
+      "local_only": true
+    },
+    {
+      "name": "close_month_costing",
+      "description": "发起**月末结账**（冻结该期间月账）：三段式的 commit 段。本工具自身只汇总该期间**已确认**成本并回报待冻结的合计与快照数（trial 不计入，仅作为 trial_count 附注），**不写冻结行**；批准后由 _apply_m6_close_month 用被审阅的这组合计落冻结行。开 finance 门（finance-officer/admin，仅 approve/reject）。冻结后该期间不得再产出新成本、也不得再确认（MONTH_CLOSED）；重复结账被拒（MONTH_ALREADY_CLOSED）。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m6/v1/month-close",
+        "timeout_s": 60
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "period"
+        ],
+        "properties": {
+          "period": {
+            "type": "string",
+            "description": "待结账期间（YYYY-MM）。"
+          },
+          "note": {
+            "type": "string",
+            "description": "结账说明（随门决策留痕）。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "execution": "sync",
+      "side_effect": "local_write",
+      "review_gate": "finance",
+      "local_only": true
+    },
+    {
+      "name": "list_costing_snapshots",
+      "description": "查询成本快照列表（试算 + 正式都在，含 status 与 cost_incomplete 标记），可按期间/状态/订单精确过滤。当用户问「算过哪些成本」「这个月的成本快照」「某单的试算」时使用。只读：不改任何状态，也不把 trial 当正式成本。",
+      "http": {
+        "method": "GET",
+        "path": "/api/m6/v1/costing-snapshots",
+        "timeout_s": 30
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "period": {
+            "type": "string",
+            "description": "账期过滤（可选，如 2026-09），精确匹配。"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "trial",
+              "confirmed"
+            ],
+            "description": "状态过滤（可选）：trial=试算不进汇总，confirmed=正式成本。"
+          },
+          "order_id": {
+            "type": "string",
+            "description": "订单号过滤（可选），精确匹配。"
+          },
+          "limit": {
+            "type": "integer",
+            "default": 50,
+            "minimum": 1,
+            "maximum": 200
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "execution": "sync",
+      "local_only": true
+    },
+    {
+      "name": "get_costing_snapshot",
+      "description": "按快照号读回一版成本的**明细**（快照头 + 成本明细行，每行带 element/source_kind/source_ref/evidence）。当用户问「这版成本怎么算出来的」「某个快照的明细/依据」时使用。只读；快照不存在时返回 NOT_FOUND（不编造）。",
+      "http": {
+        "method": "GET",
+        "path": "/api/m6/v1/costing-snapshots/{snapshot_id}",
+        "timeout_s": 30
+      },
+      "input_schema": {
+        "type": "object",
+        "required": [
+          "snapshot_id"
+        ],
+        "properties": {
+          "snapshot_id": {
+            "type": "string",
+            "description": "快照主键。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "execution": "sync",
+      "local_only": true
+    },
+    {
+      "name": "list_month_costing",
+      "description": "查询月度成本汇总（**只加 confirmed**，试算不计入并以 trial_count 明示）：给定期间返回该期间合计、快照数、是否已结账；不给期间则列出各期间的汇总。当用户问「这个月成本多少」「月账结了吗」「各月成本对比」时使用。只读；月账已冻结的期间返回冻结快照（不随新确认变动）。",
+      "http": {
+        "method": "GET",
+        "path": "/api/m6/v1/month-costing",
+        "timeout_s": 30
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "period": {
+            "type": "string",
+            "description": "账期（可选，如 2026-09）。不给则列出所有已有快照或已结账的期间。"
+          },
+          "limit": {
+            "type": "integer",
+            "default": 24,
+            "minimum": 1,
+            "maximum": 120
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "execution": "sync",
+      "local_only": true
+    }
+  ]
+}

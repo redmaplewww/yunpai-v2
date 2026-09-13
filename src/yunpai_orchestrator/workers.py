@@ -423,6 +423,27 @@ async def m0_read_documents(payload: dict[str, Any], ctx: dict[str, Any]) -> dic
     return {"success": True, "data": {"tenant_id": tenant, "count": len(rows), "documents": rows}}
 
 
+def _canonical_bodies(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """把 canonical 实体行归一成「业务字段在顶层」（含 ``business_key``）。
+
+    为什么需要：``m0_facts.list_entities`` 的形状是
+    ``{canonical_key, **envelope}``——业务体嵌套在 ``payload`` 里，**直接按业务字段过滤
+    永远匹配不到**（B0b 的两个读工具因此恒返回空，由一个 canonical 导入→回读往返测试
+    抓出）。信封→业务体的拆解单点收在 ``fact_gateway``（裁决 R2），此处只调用它。
+    """
+    from .fact_gateway import split_envelope
+
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        body, identity = split_envelope(row)
+        out.append({"canonical_key": row.get("canonical_key") or "",
+                    "business_key": str(identity.get("business_key") or ""),
+                    **body})
+    return out
+
+
 async def m0_read_expenses(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     """list_expenses（F-008）：M0 canonical 费用支出事实（只读）。
 
@@ -434,7 +455,7 @@ async def m0_read_expenses(payload: dict[str, Any], ctx: dict[str, Any]) -> dict
     store = _m0_store(ctx)
     _require_canonical_store(store, "list_expenses")
     tenant = str(ctx.get("tenant_id") or "default")
-    rows = list_entities("expense", tenant_id=tenant)
+    rows = _canonical_bodies(list_entities("expense", tenant_id=tenant))
     category = str(payload.get("category") or "")
     period = str(payload.get("period") or "")
     if category:
@@ -458,7 +479,7 @@ async def m0_read_delivery_notes(payload: dict[str, Any], ctx: dict[str, Any]) -
     store = _m0_store(ctx)
     _require_canonical_store(store, "list_delivery_notes")
     tenant = str(ctx.get("tenant_id") or "default")
-    rows = list_entities("delivery_note", tenant_id=tenant)
+    rows = _canonical_bodies(list_entities("delivery_note", tenant_id=tenant))
     counterparty = str(payload.get("counterparty_code") or "")
     ref_order = str(payload.get("ref_order_id") or "")
     if counterparty:
@@ -1678,6 +1699,12 @@ def _m5(name: str):
     return M5_HANDLERS[name]
 
 
+def _m6(name: str):
+    """Lazily import the local M6 finance handler for a manifest tool name（契约见 m6.json）。"""
+    from .m6_tools import M6_HANDLERS
+    return M6_HANDLERS[name]
+
+
 def _m2(name: str):
     """Lazily import the local M2 BOM/SOP handler for a manifest tool name."""
     from .m2_local import LOCAL_HANDLERS
@@ -1965,6 +1992,16 @@ HANDLERS = {
     "advise_m5_schedule": _m5("advise_m5_schedule"),
     "run_m5_intelligent_schedule": _m5("run_m5_intelligent_schedule"),
     "generate_m5_material_procurement_plan": _m5("generate_m5_material_procurement_plan"),
+    # ── M6 财务：成本账（F-008；契约见 registry-manifests/m6.json）──────────
+    # 三段式（书二 §6.2.1 / D-005）：save_* 属 propose 段（只落 trial 草稿，无门）；
+    # confirm_* / close_month_* 是 commit 段的**发起**（开 finance 门，翻正/冻结在
+    # graph.py 的 `_apply_m6_*` 于 approve 后执行）。三个读工具一律经 m6_store 只读口。
+    "save_costing_snapshot": _m6("save_costing_snapshot"),
+    "confirm_costing_snapshot": _m6("confirm_costing_snapshot"),
+    "close_month_costing": _m6("close_month_costing"),
+    "list_costing_snapshots": _m6("list_costing_snapshots"),
+    "get_costing_snapshot": _m6("get_costing_snapshot"),
+    "list_month_costing": _m6("list_month_costing"),
     # M0 自描述表识别（agent-driven file recognition，确定性安全网）
     "sample_file": sample_file,
     "ingest_recognized": ingest_recognized,

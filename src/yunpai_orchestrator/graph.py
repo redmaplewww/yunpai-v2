@@ -266,6 +266,160 @@ def _apply_m5_release(state: dict[str, Any], gate: dict[str, Any],
                   "at": now_iso()})
     return {"outputs": {**outputs, tool: {**envelope, "data": data, "evidence": evidence}},
             "trace": trace}
+
+
+# ── M6 财务：三段式的 commit 段（书二 §6.2.1 / D-005 / F-008）─────────────────
+#
+# 为什么在这里、而不是在工具里：v2 图内唯一开门点是 `reviewer_check_node`，且在
+# `worker_execute` 之后——"工具自己翻状态"就等于"生效写在人工批准之前"（B-001 的
+# 原病）。因此 M6 写工具分成两半：工具只做 **propose**（写 trial 草稿 / 回报待确认的
+# 事实），**生效**（trial→confirmed、月账冻结、单据生效）只发生在本节的钩子，即
+# `approve` 分支的 commit 段。照 `_apply_m5_release` 的既有经验：
+#
+# - **冲突不抛异常**（抛错会把 resume 值固化进 checkpoint、Gate 通道卡死）——改为返回
+#   `m6_conflict`，由调用方撤回本次授权并把步骤退回 pending，保持人工可恢复；
+# - 钩子只回自己拥有的增量（`outputs` + `trace_events`），**不整份覆盖 trace**，
+#   因此 approve 分支已有的 react.review 等留痕不会丢。
+#
+# 库路径与 handler 同构（`m6_store.store_path`：request.m6_db_path → `YUNPAI_M6_DB`
+# → `runtime/yunpai-m6.sqlite`）；与 M5 同一取舍：进程内嵌入用环境变量指定库。
+
+def _m6_gate_envelope(state: dict[str, Any], gate: dict[str, Any],
+                      tool: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """取该 finance 门对应的工具输出信封（门型/工具名不符或产出缺失时返回 None）。"""
+    if str(gate.get("type")) != "finance" or str(gate.get("tool") or "") != tool:
+        return None
+    envelope = (state.get("outputs") or {}).get(tool)
+    if not isinstance(envelope, dict):
+        return None
+    data = envelope.get("data") if isinstance(envelope.get("data"), dict) else {}
+    return envelope, dict(data)
+
+
+def _m6_store(state: dict[str, Any]):
+    from .m6_store import M6Store, store_path
+
+    return M6Store(store_path(state.get("request") or {}))
+
+
+def _apply_m6_costing_confirm(state: dict[str, Any], gate: dict[str, Any],
+                              *, actor: str = "") -> dict[str, Any] | None:
+    """finance 门批准 → 成本快照 ``trial → confirmed``（"正式成本"落账）。
+
+    只对 `confirm_costing_snapshot` 生效（幂等：已 confirmed 时 `changed=False`）。
+    失败（快照消失/期间已冻结）走冲突路径，不把「已授权」写成既成事实。
+    """
+    got = _m6_gate_envelope(state, gate, "confirm_costing_snapshot")
+    if got is None:
+        return None
+    envelope, data = got
+    snapshot_id = str(data.get("snapshot_id") or "")
+    if not snapshot_id:
+        return None
+    tenant_id = str(state.get("tenant_id") or "default")
+    result = _m6_store(state).confirm_snapshot(snapshot_id, actor=actor, tenant_id=tenant_id)
+    if not result.get("success"):
+        code = str(result.get("code") or "CONFIRM_FAILED")
+        return {"m6_conflict": {"code": code, "snapshot_id": snapshot_id, "tool": "confirm_costing_snapshot"},
+                "trace_events": [{"event": "m6.costing_confirm_conflict", "code": code,
+                                  "snapshot_id": snapshot_id, "at": now_iso()}]}
+    stamped = {**data, "status": "confirmed", "changed": bool(result.get("changed")),
+               "confirmed_at": result.get("confirmed_at"), "confirmed_by": actor,
+               "pending_confirmation": False, "committed_by": "finance_gate"}
+    evidence = list(envelope.get("evidence") or []) + [{
+        "module": "m6", "source_ref": f"snapshot:{snapshot_id}",
+        "evidence_ref": f"m6:{snapshot_id}:confirm",
+        "detail": f"Finance Gate 批准 → trial→confirmed（actor={actor or 'human'}），正式成本落账"}]
+    return {"outputs": {"confirm_costing_snapshot": {**envelope, "data": stamped,
+                                                    "evidence": evidence}},
+            "trace_events": [{"event": "m6.costing_confirmed", "snapshot_id": snapshot_id,
+                              "period": result.get("period"), "changed": bool(result.get("changed")),
+                              "at": now_iso()}]}
+
+
+def _apply_m6_close_month(state: dict[str, Any], gate: dict[str, Any],
+                          *, actor: str = "") -> dict[str, Any] | None:
+    """finance 门批准 → 冻结月账（月末结账）。
+
+    冻结的是**被审阅的那组合计**（propose 段回报、人工据此批准），不是在 commit 时
+    重算——审阅什么就冻结什么，避免"批了 A 冻了 B"。
+    """
+    got = _m6_gate_envelope(state, gate, "close_month_costing")
+    if got is None:
+        return None
+    envelope, data = got
+    period = str(data.get("period") or "")
+    summary = data.get("month_summary") if isinstance(data.get("month_summary"), dict) else {}
+    if not period:
+        return None
+    totals = {
+        "total_cost": summary.get("total_cost", 0.0),
+        "by_order": summary.get("by_order", []),
+        "trial_count": summary.get("trial_count", 0),
+        "trial_excluded": True,
+    }
+    tenant_id = str(state.get("tenant_id") or "default")
+    result = _m6_store(state).close_month(
+        period=period, totals=totals, snapshot_count=int(summary.get("snapshot_count") or 0),
+        actor=actor, tenant_id=tenant_id)
+    if not result.get("success"):
+        code = str(result.get("code") or "CLOSE_FAILED")
+        return {"m6_conflict": {"code": code, "period": period, "tool": "close_month_costing"},
+                "trace_events": [{"event": "m6.month_close_conflict", "code": code,
+                                  "period": period, "at": now_iso()}]}
+    stamped = {**data, "pending_close": False, "frozen": True,
+               "closed_at": result.get("closed_at"), "closed_by": actor,
+               "snapshot_count": int(result.get("snapshot_count") or 0), "totals": totals,
+               "committed_by": "finance_gate"}
+    evidence = list(envelope.get("evidence") or []) + [{
+        "module": "m6", "source_ref": f"month:{period}",
+        "evidence_ref": f"m6:{period}:close",
+        "detail": f"Finance Gate 批准 → 月账冻结（confirmed {result.get('snapshot_count')} 版，"
+                  f"合计 {totals['total_cost']}；actor={actor or 'human'}）"}]
+    return {"outputs": {"close_month_costing": {**envelope, "data": stamped, "evidence": evidence}},
+            "trace_events": [{"event": "m6.month_closed", "period": period,
+                              "closed_at": result.get("closed_at"), "at": now_iso()}]}
+
+
+def _apply_m6_document_commit(state: dict[str, Any], gate: dict[str, Any],
+                              *, actor: str = "") -> dict[str, Any] | None:
+    """finance 门批准 → 单据 ``trial → confirmed``（生效凭据）。
+
+    B1 第二批还没有单据工具（报价单/对账单台账在 B2、送货单在 B3），故本钩子按
+    **约定**分派：M6 单据写工具的产出带 ``data.pending_document_commit=True`` 且给出
+    ``doc_id``（与 `confirm_costing_snapshot` 的 ``pending_confirmation`` 同一写法）。
+    B2/B3 的工具照此声明即可复用本钩子，无需再动 `reviewer_check_node`。
+    """
+    if str(gate.get("type")) != "finance":
+        return None
+    tool = str(gate.get("tool") or "")
+    envelope = (state.get("outputs") or {}).get(tool)
+    if not isinstance(envelope, dict):
+        return None
+    data = envelope.get("data") if isinstance(envelope.get("data"), dict) else {}
+    if not data.get("pending_document_commit"):
+        return None
+    doc_id = str(data.get("doc_id") or "")
+    if not doc_id:
+        return None
+    tenant_id = str(state.get("tenant_id") or "default")
+    result = _m6_store(state).confirm_document(doc_id, actor=actor, tenant_id=tenant_id)
+    if not result.get("success"):
+        code = str(result.get("code") or "CONFIRM_FAILED")
+        return {"m6_conflict": {"code": code, "doc_id": doc_id, "tool": tool},
+                "trace_events": [{"event": "m6.document_confirm_conflict", "code": code,
+                                  "doc_id": doc_id, "at": now_iso()}]}
+    stamped = {**data, "status": "confirmed", "pending_document_commit": False,
+               "confirmed_by": actor, "committed_by": "finance_gate"}
+    evidence = list(envelope.get("evidence") or []) + [{
+        "module": "m6", "source_ref": f"document:{doc_id}",
+        "evidence_ref": f"m6:{doc_id}:confirm",
+        "detail": f"Finance Gate 批准 → 单据 trial→confirmed（actor={actor or 'human'}）"}]
+    return {"outputs": {tool: {**envelope, "data": stamped, "evidence": evidence}},
+            "trace_events": [{"event": "m6.document_confirmed", "doc_id": doc_id,
+                              "at": now_iso()}]}
+
+
 def _apply_candidate_approval(state: dict[str, Any], gate: dict[str, Any], *, actor: str) -> dict[str, Any] | None:
     """M0 candidate 门批准的副作用：把该批次未裁决候选落为 approved（人工裁决落地）。
 
@@ -406,6 +560,41 @@ def reviewer_check_node(deps: GraphDeps) -> Callable:
                         if "outputs" in released and "outputs" in updates:
                             released["outputs"] = {**updates["outputs"], **released["outputs"]}
                         updates = {**updates, **released}
+                # M6 财务 finance 门批准 → 三段式的 **commit 段**（书二 §6.2.1 / D-005）：
+                # 成本快照 trial→confirmed / 月账冻结 / 单据生效。三个钩子互斥（各自认
+                # 门型 + 工具名/约定字段），命中即按 M5 同款语义落地：
+                # 冲突（期间已冻结、快照消失）不抛异常——撤回本次授权 + 步骤退回 pending，
+                # finance 门重新打开，人工可恢复（抛错会把 resume 值固化进 checkpoint）。
+                for _m6_hook in (_apply_m6_costing_confirm, _apply_m6_close_month,
+                                 _apply_m6_document_commit):
+                    applied = _m6_hook(state, gate,
+                                       actor=str((decision or {}).get("actor") or ""))
+                    if applied is None:
+                        continue
+                    conflict = applied.pop("m6_conflict", None)
+                    events = list(applied.pop("trace_events", []) or [])
+                    if events:
+                        updates["trace"] = list(updates.get("trace") or []) + events
+                    if conflict:
+                        plan = engine.mark(plan, step_id, "pending")
+                        step = {**step, "status": "pending"}
+                        updates = {**updates, "plan": plan, "current_step": step,
+                                   "pending_gate": {**gate, "conflict": conflict},
+                                   "authorized_steps": [
+                                       s for s in (state.get("authorized_steps") or [])
+                                       if s != tool]}
+                    else:
+                        merged = dict(updates.get("outputs") or {})
+                        merged.update(applied.get("outputs") or {})
+                        applied.pop("outputs", None)
+                        updates = {**updates, **applied, "outputs": merged,
+                                   "review_applied": [
+                                       *(state.get("review_applied") or []),
+                                       {"gate_type": str(gate.get("type") or ""), "tool": tool,
+                                        "action": "commit", "actor": str((decision or {}).get("actor") or ""),
+                                        "events": [e.get("event") for e in events],
+                                        "at": now_iso()}]}
+                    break
                 return updates
             if normalized == "reject":
                 plan = engine.mark(plan, step_id, "skipped")

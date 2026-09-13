@@ -41,8 +41,10 @@ BASIS_VALUES = ("mixed", "stock", "purchase")
 #: 成本明细要素（计划 §4 `element`）
 ELEMENTS = ("material", "labor", "overhead", "expense")
 
-#: 明细来源类型（计划 §4 `source_kind`）
-SOURCE_KINDS = ("bom", "stock", "purchase", "report", "allocation")
+#: 明细来源类型（计划 §4 `source_kind`；`route` 为 B1 第二批新增：人工/制费的
+#: 标准工时来自 canonical 工艺路线，与 BOM 价、库存价、采购价、报工、分摊并列，
+#: 不能借 `bom` 之名掩盖真实来源——`source_ref` 同步带 `canonical:route/<product>`）。
+SOURCE_KINDS = ("bom", "stock", "purchase", "report", "allocation", "route")
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS m6_store_meta (
@@ -400,6 +402,16 @@ class M6Store:
             conn.close()
         return {"success": True, "snapshot_id": snapshot_id, "status": STATUS_CONFIRMED,
                 "changed": True, "confirmed_at": confirmed_at, "period": snapshot["period"]}
+
+    def list_periods(self, tenant_id: str = "default") -> list[str]:
+        """已有账期的期间列表（快照期间 ∪ 已结账期间），倒序——供月度汇总列表用。"""
+        rows = self._rows(
+            "SELECT period FROM m6_snapshots WHERE tenant_id=?"
+            " UNION SELECT period FROM m6_month_close WHERE tenant_id=?"
+            " ORDER BY period DESC",
+            (tenant_id, tenant_id),
+        )
+        return [str(row["period"]) for row in rows]
 
     def month_summary(self, period: str, tenant_id: str = "default") -> dict[str, Any]:
         """月末汇总：**只加 ``confirmed``**（试算不进账，计划 §6 的 A 问题）。

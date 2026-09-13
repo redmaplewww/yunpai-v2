@@ -14,6 +14,10 @@
 - BLOCKED_INPUT 结果 → gate blocked_input（data 补数门）
 - M4 写工具（16 条，rows-S5.md §「需补审查」）：缺供应商映射 → gate procurement
   （补数可重跑）；其余写操作 → gate authorization（执行后人工授权，approve 不重跑副作用）
+- M6 财务写工具（F-008 / D-005）：三段式——`save_costing_snapshot` 属 propose 段
+  （只写 `trial` 草稿 → 刻意无门，D-008）；`confirm_costing_snapshot` /
+  `close_month_costing` 属 commit 段的发起 → gate finance（翻正/冻结由
+  `graph.py` 的 `_apply_m6_*` 在 approve 后执行，见书二 §6.2.1）。
 默认规则：manifest spec.review_gate ∈ {candidate,review,engineering,procurement,schedule}
 且未授权时 → 对应 Gate（schedule 归一化为 apply）。
 
@@ -237,6 +241,39 @@ RULES: dict[str, list[Check]] = {
         Check("data.generated", "eq", True, action="gate:authorization",
               reason="M1 订单 Excel 导出落盘（写：文件 + download_url）须人工授权确认"),
     ],
+    # ── M6 财务写工具（F-008 / D-005 三段式，书二 §6.2.1）───────────────────
+    # 三段式的 propose/commit 分界落在「工具」与「approve 后的 _apply_* 钩子」两侧：
+    #   * save_costing_snapshot    = **propose 段**：只写 ``status=trial`` 的草稿快照。
+    #     试算不构成生效事实、不进月末汇总，故**不开门**——合同显式声明
+    #     ``review_gate="none"``（v2 默认推导会按 side_effect 给写工具配门，必须显式
+    #     关掉），理由与代价见账本 **D-008**（check_contracts 会为此报一条 W2：已知且
+    #     已裁定，由 ``tests/test_m6_finance_gate.py::test_trial_snapshot_is_intentionally_ungated``
+    #     锁定为「刻意」而非漂移）。
+    #   * confirm_costing_snapshot = **commit 段的发起**：工具自身只做前置校验
+    #     （快照存在 / 未确认 / 月账未冻结），**不翻状态**；``trial→confirmed`` 由
+    #     approve 后的 ``graph._apply_m6_costing_confirm`` 执行 → 开 ``finance`` 门。
+    #   * close_month_costing      = 同上：工具只回报待冻结月账，冻结由
+    #     ``graph._apply_m6_close_month`` 执行 → 开 ``finance`` 门。
+    # 判据（三段式）：任何"生效"的写只能发生在 commit 段；reject 路径不得落生效行。
+    "save_costing_snapshot": [
+        Check("success", "eq", False, action="fail",
+              reason="试算快照未落库（该期间月账已冻结或入参非法）——不得当成功吞掉"),
+    ],
+    "confirm_costing_snapshot": [
+        Check("success", "eq", False, action="fail",
+              reason="成本确认前置校验未通过（快照不存在，或该期间月账已冻结）"),
+        # 只在「确实还需人工确认」时开门：已 confirmed 的快照是幂等 no-op
+        # （pending_confirmation=False），重复确认不该产生第二次人工确认。
+        Check("data.pending_confirmation", "eq", True, action="gate:finance",
+              reason="成本确认 trial→confirmed 是生效写，须 finance 门人工批准后由 "
+                     "_apply_m6_costing_confirm 落库"),
+    ],
+    "close_month_costing": [
+        Check("success", "eq", False, action="fail",
+              reason="月末结账前置校验未通过（该期间已结账/无法汇总）"),
+        Check("data.pending_close", "eq", True, action="gate:finance",
+              reason="月账冻结是生效写，须 finance 门人工批准后由 _apply_m6_close_month 落库"),
+    ],
 }
 
 #: M0 canonical 写工具（rows-S1「审查需补」）：成功即开 candidate 门。
@@ -270,6 +307,10 @@ _REVIEW_GATE_MAP = {
     "apply": GATE_APPLY,
     "sensitive_data": "sensitive_data",
     "authorization": "authorization",
+    # F-008（M6 财务 / D-005）：财务确认 · 月末结账 · 单据落库专有门型。
+    # 缺这一行会让 manifest 的 `review_gate: "finance"` 归一化成空 →
+    # check_contracts 报 W2「本地写工具无门」（声明与生效门型不一致，B-002 那类）。
+    "finance": "finance",
     "data": "blocked_input",
     "blocked_input": "blocked_input",
     "none": "",

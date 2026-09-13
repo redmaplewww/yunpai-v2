@@ -1065,6 +1065,66 @@ def read_m4_supply_snapshot(state: RunState) -> dict[str, Any]:
     return m4
 
 
+#: M4 追踪行/采购单行项一次读取的上限（装配层只取事实，不做分页语义）。
+_M4_PRICE_ROW_LIMIT = 10_000
+
+
+def read_m4_tracking_price_facts(state: RunState) -> dict[str, Any]:
+    """R1a 价源事实：从 M4B 采购追踪取**实际采购单价**行（D-007）。
+
+    为什么在装配层读、而不是让 M6 自己读：**D9** —— M6 不自开 M4 store。这里只把
+    M4A/M4B 的事实原样取出来交给 M6，解析（哪一行是有效单价、同键取新）由 M6 的纯函数
+    `m6_price_source.purchase_prices_from_tracking` 做，语义有单测锁定。
+
+    读口优先级：``request.purchase_tracking_rows``（显式给出/离线联调）→ M4B 库
+    （``request.m4b_db_path`` → ``YUNPAI_M4B_DB`` → 默认库，**库不存在即返回空**，不建库）；
+    采购单只用于拼 ``purchase_order_item_id → item_code/internal_material_no`` 映射
+    （``request.m4_db_path`` → ``YUNPAI_M4_DB``）。取不到就返回空——M6 侧会把缺价的行标
+    ``cost_incomplete``（绝不编造价）。
+    """
+    request = state.get("request", {})
+    rows = request.get("purchase_tracking_rows")
+    if isinstance(rows, list) and rows:
+        items = request.get("purchase_order_items")
+        return {"purchase_tracking_rows": rows,
+                "purchase_order_items": items if isinstance(items, list) else []}
+    from pathlib import Path
+
+    m4b_db = str(request.get("m4b_db_path") or os.getenv("YUNPAI_M4B_DB")
+                 or "runtime/yunpai-m4b.sqlite")
+    if not Path(m4b_db).exists():
+        return {}
+    tenant_id = str(state.get("tenant_id") or "default")
+    try:
+        from .m4b_store import M4BStore
+
+        tracking, _total = M4BStore(m4b_db).tracking_list(
+            tenant_id, offset=0, limit=_M4_PRICE_ROW_LIMIT)
+    except Exception:  # noqa: BLE001 —— 读不到价源按「缺价」处理，调用方标 cost_incomplete
+        return {}
+    order_items: list[dict[str, Any]] = []
+    m4_db = str(request.get("m4_db_path") or os.getenv("YUNPAI_M4_DB")
+                or "runtime/yunpai-m4.sqlite")
+    if Path(m4_db).exists():
+        try:
+            from .m4_store import M4Store
+
+            listed = M4Store(m4_db).list_purchase_orders(
+                page=1, page_size=1000, status=None, supplier_name=None, tenant_id=tenant_id)
+            for order in listed.get("items") or []:
+                order_items.extend(
+                    item for item in (order.get("items") or []) if isinstance(item, dict))
+        except Exception:  # noqa: BLE001 —— 映射缺失时 M6 只能按行项 id 键查价（保守但可用）
+            order_items = []
+    return {"purchase_tracking_rows": tracking, "purchase_order_items": order_items}
+
+
+def _period_of(value: Any) -> str:
+    """从日期事实推账期（``YYYY-MM``）；形态不符返回空（不猜账期）。"""
+    text = str(value or "")
+    return text[:7] if len(text) >= 7 and text[4] == "-" else ""
+
+
 # ---------------------------------------------------------------------------
 # 主链 payload 装配
 # ---------------------------------------------------------------------------
@@ -1555,4 +1615,64 @@ def bridge_payload(state: RunState, tool: str) -> dict[str, Any]:
             payload["scenario_id"] = str(schedule.get("scenario_id") or solve.get("scenario_id") or "")
             payload["lifecycle_status"] = str(solve.get("lifecycle_status") or "released")
         return payload
+    # ── M6 财务（F-008）：成本计算的输入全部来自**只读**事实（D9）────────────────
+    if tool == "save_costing_snapshot":
+        order = read_order(state)
+        product_code = str(order.get("product_code") or request.get("product_code") or "")
+        if not product_code:
+            return blocked(state, source_module="m1", tool=tool,
+                           missing_fields=["订单 header.product_code（或 request.product_code）"],
+                           required_tool="ingest_document",
+                           recovery="请先完成 M1 解析/复核或显式给出产品编码，成本对象不能缺")
+        bom_lines = (read_approved_bom(state)
+                     or _bom_lines_from_entities(state, product_code)
+                     or (request.get("bom_lines") if isinstance(request.get("bom_lines"), list)
+                         else []))
+        if not bom_lines:
+            return blocked(state, source_module="m2", tool=tool,
+                           missing_fields=["已批准 BOM 行"],
+                           required_tool="run_bom_sop_workflow",
+                           recovery="请先完成工程 Gate 批准 BOM（或显式给出 bom_lines）再算成本")
+        period = str(request.get("period") or _period_of(order.get("due_date")) or "")
+        if not period:
+            return blocked(state, source_module="m6", tool=tool,
+                           missing_fields=["request.period（账期 YYYY-MM）"],
+                           required_tool="save_costing_snapshot",
+                           recovery="成本快照必须落在明确账期上；请给出 period 或订单交期")
+        routing_steps = read_approved_route(state) or _route_steps_from_entities(state, product_code)
+        payload = {
+            "period": period,
+            "order_id": str(order.get("order_id") or request.get("order_id") or ""),
+            "product_code": product_code,
+            "batch_no": str(request.get("batch_no") or ""),
+            "quantity": order.get("order_qty") or order.get("quantity"),
+            "bom_lines": bom_lines,
+            "routing_steps": routing_steps,
+            # 库存事实（D5/D6）：有库存走库存成本价；缺料才用下面的采购价
+            "inventory": read_inventory_facts(state),
+            "hour_rate": request.get("hour_rate"),
+            "overhead_rate": request.get("overhead_rate"),
+        }
+        # R1a：M4 采购追踪的实际单价（缺价由 M6 标 cost_incomplete，不编造）
+        payload.update(read_m4_tracking_price_facts(state))
+        return payload
+    if tool in ("confirm_costing_snapshot", "get_costing_snapshot"):
+        # 快照号优先取上游 save_costing_snapshot 的产出（那条链的落地物）。
+        saved = output_data(state, "save_costing_snapshot")
+        snapshot_id = str(request.get("snapshot_id") or saved.get("snapshot_id") or "")
+        if not snapshot_id:
+            return blocked(state, source_module="m6", tool=tool,
+                           missing_fields=["save_costing_snapshot.snapshot_id"],
+                           required_tool="save_costing_snapshot",
+                           recovery="请先算出并落一版试算快照，再确认/回读它")
+        return {"snapshot_id": snapshot_id}
+    if tool == "close_month_costing":
+        saved = output_data(state, "save_costing_snapshot")
+        period = str(request.get("period") or saved.get("period") or "")
+        if not period:
+            return blocked(state, source_module="m6", tool=tool,
+                           missing_fields=["request.period（账期 YYYY-MM）"],
+                           required_tool="save_costing_snapshot",
+                           recovery="月结必须指定账期；请给出 period 或先落一版该期间快照")
+        return {"period": period}
     return {}

@@ -4,10 +4,10 @@
 
 ## 当前验收结论
 
-- 结论：V2 工具迁移 6 分片（M0–M5）已全合入集成分支并全绿（E-004）；F-004 完成、F-006 完成（E-006）；Gate 覆盖缺口 0（E-005，R21 收口）；**M6 财务（F-008）开工首批增量通过（E-008：B0a 实体收口 + R0 内核搬运）**
-- 验收范围：V2-M3 注册批次（119 工具）+ 集成收口 + W913 双路径联调 + **M6 第一批（B0a/R0）**
+- 结论：V2 工具迁移 6 分片（M0–M5）已全合入集成分支并全绿（E-004）；F-004 完成、F-006 完成（E-006）；Gate 覆盖缺口 0（E-005，R21 收口）；**M6 财务（F-008）B0a/B0b/R0/R1a 与 B1 前两批通过（E-008：实体收口 + 内核搬运 + 成本账 6 工具与三段式 commit 钩子）**
+- 验收范围：V2-M3 注册批次（119 工具）+ 集成收口 + W913 双路径联调 + **M6 财务（B0a/B0b/R0/R1a + B1 前两批，工具面 129）**
 - 最后检查：2026-09-13
-- 遗留问题：**B-001 已裁定（D-005，三段式先批准后落库；存量写工具转 B-014）**；B-003..B-007 已修复（第四轮 K1–K6）；B-013（R0）已决策并执行首批；M6 余批 B0b/R1a/B1–B7 待做
+- 遗留问题：**B-001 已裁定（D-005，三段式先批准后落库；存量写工具转 B-014）**；B-003..B-007 已修复（第四轮 K1–K6）；B-013（R0）已决策并执行首批；M6 余批 B1 其余内核件/B2–B7 待做
 
 ## 验收标准
 
@@ -29,7 +29,7 @@
 | E-004 | 2026-09-09 | pytest 642 passed/4 skipped(exit0)；check_contracts exit0；handlers114/bound_local100/unbound6/visible109/rules51；Gate 44→42/缺口1；W913 free 通过、workflow 未达 released | 通过（F-004 完成/F-006 部分） | @a75fab3 | REPORT-MIG-INTEGRATION.md | 长期 |
 | E-005 | 2026-09-09 | R21 收口 Gate 缺口：m0.json:150 review_gate candidate→data（gate_type_for→blocked_input）+ 断言 tests/test_migration_m0.py:466-507；pytest 643 passed/4 skipped(exit0)；check_contracts exit0（--strict 无新增 W） | 通过（44 需补→43 覆盖/0 缺口/1 有意不加） | @f44fbf7 | GATE-COVERAGE-INT2.md §3.3 | 长期 |
 | E-006 | 2026-09-09 | W913 双路径实跑（v2_w913.py）：workflow run-b84071dc…/free run-3f6b9383…（source=llm）均 completed+released+is_current_head true；pytest 659 passed/4 skipped(exit0)；check_contracts exit0 | 通过（F-006 完成） | @1175bfe | REPORT-MIG-INTEGRATION.md §11 | 长期 |
-| E-008 | 2026-09-13 | **M6 增量（B0a + B0b + R0 + R1a + B1-1）**：CANONICAL_SCHEMA 收口 `expense`/`delivery_note`/`stock_class`(四态)+`workshop`+`amount`；`m6_defaults.py`(83)/`m6_cost.py`(601)/`m6_price_source.py`/`m6_store.py` 落位；`ENTITY_TYPES`+2、`FACADE_KINDS`+2、`list_expenses`/`list_delivery_notes`、m0.json+4 契约、RULES 门+2；`finance` 门型入 gates.py；新增 `test_m6_cost`(15)/`test_m6_expense`(9)/`test_m6_entities`(6)/`test_m6_price_source`(6)/`test_m6_store`(14)，`test_binding` 计数锁 119→123。pytest **712 passed/2 skipped**（基线 661/2）；check_contracts exit 0（工具 119→123、handler 100→104） | 通过（增量；F-008 进行中） | 分支 `feat/m6-finance-20260913`（提交 1d796ce / ed4d32c + 本批）；范围与口径见 `M6-三项决策说明-20260913.md` | B-013 已决策并执行首批；B-014 待排期；**canonical 导入→回读往返未验**；**R1a 装配未接线**；M6 工具（6 个快照工具）与 `_apply_m6_*` commit 钩子待 B1 第二批；`注册审查台账` 未登记新增件；币种/含税口径未换算 | 至 M6 全批次完成 |
+| E-008 | 2026-09-13 |**M6 增量（B0a + B0b + R0 + R1a + B1-1 + B1-2）**：CANONICAL_SCHEMA 收口 `expense`/`delivery_note`/`stock_class`(四态)+`workshop`+`amount`；`m6_defaults.py`(83)/`m6_cost.py`(601)/`m6_price_source.py`(含 D5 `resolve_material_prices`)/`m6_store.py`/`m6_tools.py` 落位；`registry-manifests/m6.json` 6 契约（写 3 + 读 3）+ `finance` 门型入 gates.py + `_REVIEW_GATE_MAP` 补 `finance`；`graph.py` 三个 `_apply_m6_*` commit 钩子（approve 分支分派、冲突不抛异常）+ `state.review_applied`；`orchestration_bridge` 装配接线（含 R1a `read_m4_tracking_price_facts` 读 M4B 追踪价源）；`ENTITY_TYPES`+2、`FACADE_KINDS`+2、`list_expenses`/`list_delivery_notes`（并修掉信封未归一导致恒空的 bug）、m0.json+4 契约、RULES 门+2；新增 `test_m6_cost`(15)/`test_m6_expense`(9)/`test_m6_entities`(6)/`test_m6_price_source`(6)/`test_m6_store`(14)/`test_m6_costing_tools`(21)/`test_m6_finance_gate`(7)/`test_m6_entities_roundtrip`(3)，`test_binding` 计数锁 119→123→129。pytest **743 passed/2 skipped**（基线 661/2）；check_contracts exit 0（工具 119→129、handler 100→110）—— 三段式 5 条验收断言（说明一 §1.7）全过：trial 不进汇总 / finance 门 interrupt→approve 才翻 confirmed / reject 不产生 confirmed 行 / 越权角色被拦且不抛异常 / 无自动放行 |通过（增量；F-008 进行中） | 分支 `feat/m6-finance-20260913`（提交 1d796ce / ed4d32c / 5531c08 + 本批）；范围与口径见 `M6-三项决策说明-20260913.md`、D-008 见 `PROJECT_OVERVIEW.md` | B-013 已决策并执行首批；B-014 待排期；B1 其余 3 件内核读工具与 B2 单据台账待做；`stock_class` 枚举值来源为空（数据侧）；币种/含税未换算；老仓 7 个工具级 registry 用例随其工具批次移植 | 至 M6 全批次完成 |
 
 ## Gate 记录
 
@@ -44,3 +44,4 @@
 | 2026-09-09 | Gate 覆盖缺口微收口（INT2 第三轮 · R21：`data_import_commit` 声明对齐 + 断言） | E-005 | 通过（643 passed/4 skipped；check_contracts exit 0；--strict 无新增 W） | workflow 路径未达 m5.released（K1–K5）；B-001 批准前已写 | Gate 缺口 0（43 覆盖 + 1 有意不加 = 44）；B-002 已修复 |
 | 2026-09-09 | W913 workflow 路径打通（INT2 第四轮 · K1–K6：M0 前向装配 / 门补数可见 / 工序形状 / 降级日历 / 降级资源） | E-006 | 通过（659 passed/4 skipped；check_contracts exit 0；双路径 completed+released，判定器 PASS 5/5） | B-001 批准前已写（先改书再改码）；K6 实跑路径工位来自 supplement，由严格校验单测锁定 | F-006 完成；B-003..B-007 已修复 |
 | 2026-09-13 | M6 财务第一批增量（B0a 实体收口 + R0 内核搬运；F-008） | E-008 | 通过（685 passed/2 skipped，基线 661/2 零回归） | B-013 已决策并执行首批；B-014 待排期；`stock_class` 四态待 B0b 裁定 | F-008 进行中；D-005/D-006/D-007 已裁定，书二 §6.2.1 已补 |
+| 2026-09-13 | M6 财务 B1 第二批（成本账 6 工具 + 三段式 commit 钩子 + R1a 装配接线；F-008） | E-008 | 通过（743 passed/2 skipped，基线 712/2 零回归；三段式 5 条断言全过；check_contracts exit 0） | B1 其余内核件与 B2 待做；`stock_class` 值来源为空 | F-008 进行中；D-008 新增（试算快照刻意无门，接受一条 W2） |
