@@ -423,6 +423,54 @@ async def m0_read_documents(payload: dict[str, Any], ctx: dict[str, Any]) -> dic
     return {"success": True, "data": {"tenant_id": tenant, "count": len(rows), "documents": rows}}
 
 
+async def m0_read_expenses(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """list_expenses（F-008）：M0 canonical 费用支出事实（只读）。
+
+    M6 的 `allocate_expenses` 消费 category/amount/period/allocation_basis；
+    可按 category / period 精确过滤（省略即全量，受 limit 截断）。
+    """
+    from .m0_facts import list_entities
+
+    store = _m0_store(ctx)
+    _require_canonical_store(store, "list_expenses")
+    tenant = str(ctx.get("tenant_id") or "default")
+    rows = list_entities("expense", tenant_id=tenant)
+    category = str(payload.get("category") or "")
+    period = str(payload.get("period") or "")
+    if category:
+        rows = [row for row in rows if str(row.get("category") or "") == category]
+    if period:
+        rows = [row for row in rows if str(row.get("period") or "") == period]
+    limit = int(payload.get("limit") or 0)
+    if limit > 0:
+        rows = rows[:limit]
+    return {"success": True, "data": {"tenant_id": tenant, "count": len(rows), "expenses": rows}}
+
+
+async def m0_read_delivery_notes(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
+    """list_delivery_notes（F-008）：送货单事实（对账依据，只读）。
+
+    canonical `delivery_note` 为唯一主（D4/D-020），M6 不建 create；可按
+    counterparty_code / ref_order_id 精确过滤。
+    """
+    from .m0_facts import list_entities
+
+    store = _m0_store(ctx)
+    _require_canonical_store(store, "list_delivery_notes")
+    tenant = str(ctx.get("tenant_id") or "default")
+    rows = list_entities("delivery_note", tenant_id=tenant)
+    counterparty = str(payload.get("counterparty_code") or "")
+    ref_order = str(payload.get("ref_order_id") or "")
+    if counterparty:
+        rows = [row for row in rows if str(row.get("counterparty_code") or "") == counterparty]
+    if ref_order:
+        rows = [row for row in rows if str(row.get("ref_order_id") or "") == ref_order]
+    limit = int(payload.get("limit") or 0)
+    if limit > 0:
+        rows = rows[:limit]
+    return {"success": True, "data": {"tenant_id": tenant, "count": len(rows), "delivery_notes": rows}}
+
+
 async def m0_product_overview(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     from .m0_facts import product_overview as _overview
 
@@ -747,6 +795,10 @@ FACADE_KINDS: dict[str, str] = {
     "m0_routes_import": "process_route",
     "m0_operations_import": "operation",
     "m0_tooling_import": "tooling",
+    # F-008（M6 财务）：费用支出 + 送货单写入面（老仓 `m0_expenses_import` /
+    # `m0_delivery_notes_import`，本处收口到 v2 的统一 facade）。
+    "m0_expenses_import": "expense",
+    "m0_delivery_notes_import": "delivery_note",
 }
 
 
@@ -1819,12 +1871,17 @@ HANDLERS = {
     "m0_routes_import": FACADE_HANDLERS["m0_routes_import"],
     "m0_operations_import": FACADE_HANDLERS["m0_operations_import"],
     "m0_tooling_import": FACADE_HANDLERS["m0_tooling_import"],
+    # F-008（M6 财务）写入面：费用支出 / 送货单（canonical 唯一主，M6 侧只读）
+    "m0_expenses_import": FACADE_HANDLERS["m0_expenses_import"],
+    "m0_delivery_notes_import": FACADE_HANDLERS["m0_delivery_notes_import"],
     # canonical 读面（进程内 m0_facts，需 YUNPAI_M0_DB）
     "get_m0_product_overview": m0_product_overview,
     "get_m0_product_graph": m0_product_graph,
     "list_m0_documents": m0_read_documents,
     "list_m0_inventory": m0_read_inventory,
     "list_m0_entities": m0_read_entities,
+    "list_expenses": m0_read_expenses,
+    "list_delivery_notes": m0_read_delivery_notes,
     # ── M1 文档解析（本地实现；契约见 registry-manifests/m1.json）──────────
     # 迁自 _wt/INT/src/yunpai_langgraph/workers.py（rows-S2 全 17 条「改造后搬」）。
     # ingest_document 覆盖 V2 原 fixture/preview 版（provider=local + M1Store 持久化）。

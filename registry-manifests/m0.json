@@ -656,6 +656,88 @@
         }
       },
       "execution": "sync"
+    },
+    {
+      "name": "m0_expenses_import",
+      "description": "M0 canonical 费用支出导入 facade（F-008／M6 财务）。费用类别为开放枚举（社保/税费/电费/运费/伙食费/杂项），必填 category/amount/period；金额是事实值照抄、不编造。发布后 M6 的 allocate_expenses 可按期间/类别归集分摊。入口定位：typed 直发 facade，与 data_import_run+data_import_commit 的批次人工裁决链并列。",
+      "http": { "method": "POST", "path": "/api/m0/v1/expenses/import", "timeout_s": 120 },
+      "input_schema": {
+        "type": "object",
+        "required": ["records"],
+        "properties": { "records": { "type": "array", "minItems": 1 } }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": { "success": { "type": "boolean" }, "data": { "type": "object" } }
+      },
+      "execution": "sync",
+      "side_effect": "external_write",
+      "review_gate": "candidate"
+    },
+    {
+      "name": "m0_delivery_notes_import",
+      "description": "M0 canonical 送货单导入 facade（F-008／M6 财务，对账依据）。身份键 note_no，必填 note_no/counterparty_code/note_date；签收面字段（signed_by/signed_at/warehouse_confirmed_by/qc_status）随单入库。canonical 为唯一主（D4/D-020），M6 侧只读、不建 create。",
+      "http": { "method": "POST", "path": "/api/m0/v1/delivery-notes/import", "timeout_s": 120 },
+      "input_schema": {
+        "type": "object",
+        "required": ["records"],
+        "properties": { "records": { "type": "array", "minItems": 1 } }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": { "success": { "type": "boolean" }, "data": { "type": "object" } }
+      },
+      "execution": "sync",
+      "side_effect": "external_write",
+      "review_gate": "candidate"
+    },
+    {
+      "name": "list_expenses",
+      "description": "查询 M0 已入库的费用支出事实（canonical entity_type=expense），返回类别、金额、期间与分摊口径。当用户问费用、支出、社保、税费、电费、运费、伙食费、杂项或某期间费用合计时使用；可按 category 或 period 精确过滤。",
+      "http": { "method": "GET", "path": "/api/m0/import/master/m0_master_expense", "timeout_s": 30 },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "category": { "type": "string", "description": "费用类别过滤（可选），精确匹配。" },
+          "period": { "type": "string", "description": "期间过滤（可选，如 2026-09），精确匹配。" },
+          "limit": { "type": "integer", "default": 50, "minimum": 1, "maximum": 200 }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean" },
+          "data": {
+            "type": "object",
+            "properties": { "expenses": { "type": "array" } }
+          }
+        }
+      },
+      "execution": "sync"
+    },
+    {
+      "name": "list_delivery_notes",
+      "description": "查询 M0 已入库的送货单（canonical entity_type=delivery_note，对账依据），返回单号、往来单位、日期、方向、金额与签收状态。当用户问送货单、签收记录、对账单依据时使用；可按 counterparty_code 或 ref_order_id 精确过滤。",
+      "http": { "method": "GET", "path": "/api/m0/import/master/m0_master_delivery_note", "timeout_s": 30 },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "counterparty_code": { "type": "string", "description": "往来单位编码过滤（可选），精确匹配。" },
+          "ref_order_id": { "type": "string", "description": "关联订单号过滤（可选），精确匹配。" },
+          "limit": { "type": "integer", "default": 50, "minimum": 1, "maximum": 200 }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean" },
+          "data": {
+            "type": "object",
+            "properties": { "delivery_notes": { "type": "array" } }
+          }
+        }
+      },
+      "execution": "sync"
     }
   ]
 }

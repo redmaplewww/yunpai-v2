@@ -64,3 +64,30 @@ def test_validate_accepts_numeric_quantity_and_strips_evidence():
 
 def test_known_entity_types_is_non_empty():
     assert len(known_entity_types()) >= 14
+
+
+def test_inventory_accepts_stock_class_four_states():
+    """库存四态（DEV-06，F-008/D5 依赖）：stock_class 放行且取值受枚举约束。
+
+    该字段为**可选**——既有记录不带它仍合法（向后兼容）；带非法值必须拒（不静默通过）。
+    """
+    from yunpai_orchestrator.canonical_schema import STOCK_CLASSES
+
+    assert STOCK_CLASSES == frozenset({"raw", "finished", "semi", "wip"})
+
+    for stock_class in sorted(STOCK_CLASSES):
+        result = validate_canonical("inventory", [
+            {"material_code": "M-1", "available_qty": 10, "stock_class": stock_class},
+        ])
+        assert result["errors"] == [], stock_class
+        assert result["clean_records"][0]["stock_class"] == stock_class
+
+    # 不带 stock_class 仍合法（向后兼容：既有记录不需回填）。
+    without = validate_canonical("inventory", [{"material_code": "M-1", "available_qty": 10}])
+    assert without["errors"] == []
+
+    # 非法态拒绝（不静默通过）。
+    invalid = validate_canonical("inventory", [
+        {"material_code": "M-1", "available_qty": 10, "stock_class": "unknown_state"},
+    ])
+    assert any("stock_class" in e["message"] and "枚举" in e["message"] for e in invalid["errors"])

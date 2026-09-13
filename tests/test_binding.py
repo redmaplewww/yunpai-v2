@@ -19,8 +19,11 @@ def registry():
     return build_default_registry()
 
 
-def test_119_specs_loaded(registry):
-    assert len(registry.specs) == 119  # 115 manifest + 4 本地识别件套
+def test_specs_loaded_count(registry):
+    """工具总数锁：115 manifest（V2-M3 注册基线）+ 4 本地识别件套 = 119；
+    F-008（M6 财务，2026-09-13）新增 4 件（m0_expenses_import / m0_delivery_notes_import /
+    list_expenses / list_delivery_notes）→ 123。"""
+    assert len(registry.specs) == 123
 
 
 def test_deprecated_and_unbound_never_visible(registry):

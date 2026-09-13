@@ -29,3 +29,6 @@ node_modules/
 .vscode/
 Thumbs.db
 .DS_Store
+
+# 工具状态（Mimosa 安全插件：只写本地状态，不进 git）
+.mimosa/

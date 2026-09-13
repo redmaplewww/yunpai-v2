@@ -251,6 +251,8 @@ M0_CANDIDATE_GATE_TOOLS: tuple[str, ...] = (
     "m0_products_import", "m0_orders_import", "m0_boms_import", "m0_materials_import",
     "m0_suppliers_import", "m0_equipment_import", "m0_routes_import",
     "m0_operations_import", "m0_tooling_import",
+    # F-008（M6 财务）：费用支出 + 送货单写入面同样走 candidate 门
+    "m0_expenses_import", "m0_delivery_notes_import",
 )
 for _m0_write_tool in M0_CANDIDATE_GATE_TOOLS:
     RULES.setdefault(_m0_write_tool, [

@@ -33,10 +33,13 @@ from uuid import uuid4
 
 from .m0_sandbox import utc_now
 
-# m0.ingest.v1 判别联合的 11 个 entity_type（schema 白名单）
+# m0.ingest.v1 判别联合的 entity_type（schema 白名单）
 ENTITY_TYPES: tuple[str, ...] = (
     "product", "product_family", "order", "bom", "document", "material",
     "supplier", "equipment", "process_route", "operation", "tooling",
+    # F-008（M6 财务）：费用支出事实 + 送货单（对账依据）。老仓只走 facade 层
+    # （`m0_facades.TYPED_ENTITY_REQUIRED`），此处收口进唯一白名单。
+    "expense", "delivery_note",
 )
 # 版本化实体：version_id 必填；其余稳定身份禁带 version_id
 VERSIONED_ENTITY_TYPES: frozenset[str] = frozenset({"bom", "document", "process_route"})

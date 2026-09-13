@@ -21,6 +21,7 @@
 | F-004 | 工具与技能逐个审查注册 | docs/01 §12 | P0 | 已完成 | 代码验收（E-004） | F-003 | 119 工具（115 manifest+4 本地）+8 技能台账全登记，五项 checklist 逐个过审 | docs/02 §7 | E-004 |
 | F-005 | 自进化接线与三缺口补全 | docs/01 §10 | P1 | 已规划 | - | F-004 | 观察/注入消费/使用反馈/红线周期四接缝测试全绿 | docs/02 §11 | - |
 | F-006 | 联调验收（W913 双路径） | docs/01 §13 | P0 | 已完成 | 验收通过（E-006） | F-005 | workflow `run-b84071dc…`（explicit）与 free `run-3f6b9383…`（route.source=llm）均 completed + `m5.released` + `is_current_head=true`，判定器 PASS 5/5（K1–K6 修复后打通） | docs/02 §13 | E-006 |
+| F-008 | M6 财务：成本核算链 + 成本明细账 | M6-开发计划-v2口径-20260913.md §0 | P0 | 进行中 | 增量验收（E-008） | F-004 | 成本链可按 D5/D6 口径算出并落快照；三段式（先批准后落库）生效；试算/正式分离；28 件工具注册 | M6-开发计划 §3–§7 | E-008 |
 
 ## 功能变更历史
 
@@ -31,3 +32,5 @@
 | 2026-09-09 | F-004 | 6 分片（M0–M5）全合入集成分支：119 工具全部登记，`handlers 85→114`、`bound_local 30→100`、`unbound 35→6`、`visible 84→109`、`rules 5→51`；Gate 覆盖核对 44 项需补 → 已覆盖 42 / 缺口 1（`data_import_commit` 合同门漂移） | 迁移主体完成；缺口与 R8 已知缺口（批准前已写）按「先改书再改码」登记 | E-004 | 集成收口（INT2） |
 | 2026-09-09 | F-006 | free 路径实测跑通旧死点 `ingest_m5_planning_snapshot`（completed / `snapshots_stored`）；workflow 路径实测至 M5 solve，未达 `m5.released`，4 类卡点逐条留证 | 联调验收部分完成，卡点见 `_migration/REPORT-MIG-INTEGRATION.md` §4 | E-004 | 集成收口（INT2） |
 | 2026-09-09 | F-006 | **验收通过**：K1–K6 修复后 workflow `run-b84071dc…` 与 free `run-3f6b9383…`（LLM 路由，confidence 0.95）均 completed + `m5.released` + `is_current_head=true`，5 工序 / makespan 3220 / processing 1420 分钟，判定器 PASS 5/5 | 联调验收完成（B-003..B-007 已修复）；B-001 仍待「先改书再改码」 | E-006 | W913 打通（INT2 第四轮） |
+| 2026-09-13 | F-008 | 立项：M6 财务（成本核算链 + 成本明细账）进入 v2 范围（分支 `feat/m6-finance-20260913`）。**口径变更**：`PROJECT_OVERVIEW` 原"非目标"含"不做 M6 财务…（其工具合入 main 后走注册流程进 v2）"——现改为**在 v2 直接开发**，须记 D 行 | 用户会话说"直接基于 V2 main 基线进行开发 M6 模块"；原计划（`M6-开发计划-20260910.md`）是照老仓 39092 写的，v2 实测其"已有 8 件工具 + expense/delivery_note 实体"**一件都没有**，故重出 v2 口径计划 | 无 | 用户会话（2026-09-13） |
+| 2026-09-13 | F-008 | 第一批增量：**B0a** `CANONICAL_SCHEMA` 收口 `expense`/`delivery_note`（老仓留在 facade 层 → 源分裂修复）+ `workshop` 接口预留（tooling/equipment）；**R0** 搬入 `m6_defaults.py`（83 行口径层）+ `m6_cost.py`（601 行算法内核） | 识别链原会拒收 expense/delivery_note；费率/损耗/库存成本价在 v2 无 canonical 来源（R0） | E-008 | 用户会话裁定 D-005/D-006/D-007 |
