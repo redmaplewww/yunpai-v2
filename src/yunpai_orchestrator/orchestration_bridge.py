@@ -1294,6 +1294,36 @@ def forward_m1_order_canonical(files: list[dict[str, Any]], m1_output: Any) -> l
              "content_b64": _b64.b64encode(raw).decode()}]
 
 
+def _quotation_facts(state: RunState) -> dict[str, Any]:
+    """报价输入：**行**（显式 > 订单行）+ **逐产品成本事实**（供行内滚动）。
+
+    成本怎么算仍由 M6 侧按 D5 口径做（`m6_tools._line_costs` → `_cost_breakdown`），
+    装配层只负责把事实凑齐——不在这里复算一遍，免得两处口径漂移。
+    """
+    request = state.get("request", {})
+    products: dict[str, Any] = {}
+    lines = request.get("lines")
+    if isinstance(lines, list) and lines:
+        lines = [line for line in lines if isinstance(line, dict)]
+    else:
+        order = read_order(state)
+        lines = _order_lines_from_order(state, order)
+        lines = [{"product_code": line.get("product_code"), "qty": line.get("qty")}
+                 for line in lines]
+    for code in dict.fromkeys(str(line.get("product_code") or "") for line in lines):
+        if not code:
+            continue
+        facts = _assemble_costing_facts(state, code)
+        if facts is not None:
+            products[code] = facts
+    payload: dict[str, Any] = {"lines": lines, "products": products}
+    for key in ("quote_no", "doc_no", "customer_code", "doc_date", "direction",
+                "markup_rate", "source_ref"):
+        if request.get(key) not in (None, "", [], {}):
+            payload[key] = request[key]
+    return payload
+
+
 def bridge_payload(state: RunState, tool: str) -> dict[str, Any]:
     """为受控 workflow 的某个 tool 装配 payload；缺权威输入返回 BLOCKED_INPUT 结构。
 
@@ -1831,6 +1861,37 @@ def bridge_payload(state: RunState, tool: str) -> dict[str, Any]:
         }
         for key in ("period", "allocation_basis"):
             if request.get(key) not in (None, ""):
+                payload[key] = request[key]
+        return payload
+    # ── M6 单据台账（B2）：报价单 / 对账单 ──────────────────────────────────
+    if tool in ("generate_quotation", "save_quotation"):
+        payload = _quotation_facts(state)
+        if not payload["lines"]:
+            return blocked(state, source_module="m1", tool=tool,
+                           missing_fields=["报价行（request.lines 或订单行）"],
+                           required_tool="ingest_document",
+                           recovery="报价需要产品与数量：请给出 lines，或先完成 M1 解析得到订单行")
+        return payload
+    if tool == "save_statement":
+        counterparty = str(request.get("counterparty_code") or request.get("customer_code")
+                           or request.get("supplier_code") or "")
+        if not counterparty:
+            return blocked(state, source_module="m6", tool=tool,
+                           missing_fields=["counterparty_code（对账对象）"],
+                           required_tool="save_statement",
+                           recovery="对账单必须指定往来单位；请给出 counterparty_code")
+        has_detail = (isinstance(request.get("transactions"), list) and request["transactions"]) \
+            or (isinstance(request.get("lines"), list) and request["lines"])
+        if not has_detail:
+            return blocked(state, source_module="m6", tool=tool,
+                           missing_fields=["对账明细（transactions 或 lines）"],
+                           required_tool="save_statement",
+                           recovery="对账单必须有对账依据：请给出 transactions（direction/amount）；"
+                                    "B3 的 generate_statement 将从送货单/采购单自动生成")
+        payload = {"counterparty_code": counterparty}
+        for key in ("doc_no", "statement_type", "direction", "doc_date", "opening_balance",
+                    "transactions", "lines", "amount", "source_ref"):
+            if request.get(key) not in (None, "", [], {}):
                 payload[key] = request[key]
         return payload
     return {}

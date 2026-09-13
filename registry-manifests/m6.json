@@ -525,6 +525,356 @@
       },
       "execution": "sync",
       "local_only": true
+    },
+    {
+      "name": "generate_quotation",
+      "description": "算一版报价（R-QT-1：行报价 =(材料+人工+制费)×(1+加价率)，行小计 ×数量 汇总）——**纯算数、不落库**，即「报价预览」。当用户问「这个价报多少」「按 10% 加价算一下」时使用。要落成可追溯的客户台账（并可被财务确认生效）请用 save_quotation。入口定位：与 get_product_cost 同一关系——先看数、再决定落不落。缺 product_code/qty 的行计入 missing，不编造金额。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m6/v1/quotations/preview",
+        "timeout_s": 60
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "quote_no": {
+            "type": "string",
+            "description": "报价单号（仅回显；落库时才需要唯一）。"
+          },
+          "customer_code": {
+            "type": "string",
+            "description": "客户编码（回显）。"
+          },
+          "doc_date": {
+            "type": "string",
+            "description": "报价日期（YYYY-MM-DD），不给取当日。"
+          },
+          "markup_rate": {
+            "type": "number",
+            "description": "全局加价率（行未自带时用它；缺省 0 且标 markup_assumed）。"
+          },
+          "lines": {
+            "type": "array",
+            "minItems": 1,
+            "description": "报价行：[{product_code, qty, unit_material, unit_labor, unit_overhead, markup_rate?}]。前三个成本项来自成本链（可先用 get_product_cost 算），markup_rate 是加价率小数（0.1=加 10%）；未给出时按 0 算并标 markup_assumed=true——**0 加价不等于谈好的报价**。",
+            "items": {
+              "type": "object"
+            }
+          },
+          "products": {
+            "type": "object",
+            "description": "成本事实（装配层给）：{product_code: {bom_lines, routing_steps, hour_rate, overhead_rate, inventory, purchase_tracking_rows...}}；行内未给 unit_material/labor/overhead 时据此按 D5 口径滚动（缺成本的行不给报价，进 missing）。"
+          }
+        },
+        "required": [
+          "lines"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "execution": "sync",
+      "local_only": true
+    },
+    {
+      "name": "save_quotation",
+      "description": "落一版**报价单草稿**（propose 段）并请财务确认：算报价 → 写 status=trial 草稿（客户台账，可追溯但**不构成对外承诺**）→ 开 finance 门；批准后由 _apply_m6_document_commit 翻 confirmed（生效凭据）。当用户说「给客户出张报价单」时使用。同号单据不静默覆盖（DOC_NO_EXISTS，由人决定新建/覆盖/查看）；单号不给时按 QT-日期-流水 确定性派生。缺行/缺价计入 missing，不编造金额。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m6/v1/save_quotation",
+        "timeout_s": 60
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "doc_no": {
+            "type": "string",
+            "description": "报价单号；不给则按 QT-YYYYMMDD-流水 派生。同号已存在即显式拒绝。"
+          },
+          "customer_code": {
+            "type": "string",
+            "description": "客户编码（往来单位）。"
+          },
+          "doc_date": {
+            "type": "string",
+            "description": "报价日期（YYYY-MM-DD），不给取当日。"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "out",
+              "in"
+            ],
+            "description": "单据方向，报价默认 out（我方对外）。"
+          },
+          "markup_rate": {
+            "type": "number",
+            "description": "全局加价率（行未自带时用它）。"
+          },
+          "lines": {
+            "type": "array",
+            "minItems": 1,
+            "description": "报价行：[{product_code, qty, unit_material, unit_labor, unit_overhead, markup_rate?}]。前三个成本项来自成本链（可先用 get_product_cost 算），markup_rate 是加价率小数（0.1=加 10%）；未给出时按 0 算并标 markup_assumed=true——**0 加价不等于谈好的报价**。",
+            "items": {
+              "type": "object"
+            }
+          },
+          "source_ref": {
+            "type": "string",
+            "description": "来源引用（如订单号/询价单号），随单入库供追溯。"
+          },
+          "products": {
+            "type": "object",
+            "description": "成本事实（装配层给）：{product_code: {bom_lines, routing_steps, hour_rate, overhead_rate, inventory, purchase_tracking_rows...}}；行内未给 unit_material/labor/overhead 时据此按 D5 口径滚动（缺成本的行不给报价，进 missing）。"
+          }
+        },
+        "required": [
+          "lines",
+          "customer_code"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "execution": "sync",
+      "local_only": true,
+      "side_effect": "local_write",
+      "review_gate": "finance"
+    },
+    {
+      "name": "list_quotations",
+      "description": "查询报价单台账（trial 草稿与 confirmed 生效都列出并明示状态）。当用户问「给某客户报过哪些价」「报价单列表」时使用。只读；可按客户或状态过滤。",
+      "http": {
+        "method": "GET",
+        "path": "/api/m6/v1/quotations",
+        "timeout_s": 60
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "customer_code": {
+            "type": "string",
+            "description": "客户编码过滤（可选，精确匹配）。"
+          },
+          "counterparty_code": {
+            "type": "string",
+            "description": "往来单位编码过滤（customer_code 的别名）。"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "trial",
+              "confirmed"
+            ],
+            "description": "状态过滤（可选）：trial=草稿未生效，confirmed=已生效。"
+          },
+          "limit": {
+            "type": "integer",
+            "default": 50,
+            "minimum": 1,
+            "maximum": 200
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "execution": "sync",
+      "local_only": true
+    },
+    {
+      "name": "get_quotation",
+      "description": "按单号或主键读回一张报价单（含明细行）。当用户问「这张报价单里有什么」时使用。只读；不存在返回 NOT_FOUND（不编造）。",
+      "http": {
+        "method": "GET",
+        "path": "/api/m6/v1/quotations/{doc_no}",
+        "timeout_s": 60
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "doc_no": {
+            "type": "string",
+            "description": "报价单号。"
+          },
+          "quote_no": {
+            "type": "string",
+            "description": "报价单号别名。"
+          },
+          "doc_id": {
+            "type": "string",
+            "description": "单据主键（与单号二选一）。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "execution": "sync",
+      "local_only": true
+    },
+    {
+      "name": "save_statement",
+      "description": "落一版**对账单草稿**（propose 段）并请财务确认：期末 = 期初 + Σin − Σout（compute_statement 确定性累加）→ 写 status=trial 草稿 → 开 finance 门。当用户说「和这个客户/供应商对一下账」时使用。statement_type 决定方向：customer=我方对客户（out）、supplier=对供应商（in）。明细缺失（既无 transactions 也无 lines）即拒（对账单必须有对账依据，不编造）。同号单据不覆盖；单号不给时按 ST-日期-流水 派生。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m6/v1/save_statement",
+        "timeout_s": 60
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "doc_no": {
+            "type": "string",
+            "description": "对账单号；不给则按 ST-YYYYMMDD-流水 派生。"
+          },
+          "counterparty_code": {
+            "type": "string",
+            "description": "往来单位编码（客户或供应商）。"
+          },
+          "statement_type": {
+            "type": "string",
+            "enum": [
+              "customer",
+              "supplier"
+            ],
+            "description": "对账类型（决定 direction：customer→out、supplier→in）。"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "out",
+              "in"
+            ],
+            "description": "单据方向（显式覆盖 statement_type 的推导）。"
+          },
+          "doc_date": {
+            "type": "string",
+            "description": "对账日期（YYYY-MM-DD），不给取当日。"
+          },
+          "opening_balance": {
+            "type": "number",
+            "description": "期初余额（元）。"
+          },
+          "transactions": {
+            "type": "array",
+            "description": "对账明细：[{direction(in|out), amount, ref?}]；direction in=增加余额（客户发货确认/供应商入库）、out=减少（客户回款/供应商付款）。",
+            "items": {
+              "type": "object"
+            }
+          },
+          "lines": {
+            "type": "array",
+            "description": "已定稿的对账行（与 transactions 二选一，原样采信不二次推算）。",
+            "items": {
+              "type": "object"
+            }
+          },
+          "amount": {
+            "type": "number",
+            "description": "对账金额/期末余额（只给 lines 时用）。"
+          },
+          "source_ref": {
+            "type": "string",
+            "description": "来源引用（如订单号），随单入库供追溯。"
+          }
+        },
+        "required": [
+          "counterparty_code"
+        ]
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "execution": "sync",
+      "local_only": true,
+      "side_effect": "local_write",
+      "review_gate": "finance"
+    },
+    {
+      "name": "list_statements",
+      "description": "查询对账单台账（双向：customer 出 / supplier 入；trial 草稿与 confirmed 生效都列出）。当用户问「对账单列表」「和某供应商对过账吗」时使用。只读；可按往来单位或状态过滤。",
+      "http": {
+        "method": "GET",
+        "path": "/api/m6/v1/statements",
+        "timeout_s": 60
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "counterparty_code": {
+            "type": "string",
+            "description": "往来单位编码过滤（可选）。"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "trial",
+              "confirmed"
+            ],
+            "description": "状态过滤（可选）。"
+          },
+          "limit": {
+            "type": "integer",
+            "default": 50,
+            "minimum": 1,
+            "maximum": 200
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "execution": "sync",
+      "local_only": true
     }
   ]
 }

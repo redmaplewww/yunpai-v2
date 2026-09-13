@@ -501,6 +501,16 @@ class M6Store:
             conn.close()
         return {"success": True, "doc_id": doc_id, "status": STATUS_CONFIRMED, "changed": True}
 
+    def get_document(self, doc_id: str, tenant_id: str = "default") -> dict[str, Any] | None:
+        """按单据主键读回（含 lines/evidence 解析）——`get_quotation` 等处用。"""
+        doc = self._row(
+            "SELECT * FROM m6_documents WHERE doc_id=? AND tenant_id=?", (doc_id, tenant_id))
+        if doc is None:
+            return None
+        doc["lines"] = _loads(doc.get("lines"), [])
+        doc["evidence"] = _loads(doc.get("evidence"), {})
+        return doc
+
     def list_documents(self, *, doc_type: str | None = None, status: str | None = None,
                        counterparty_code: str | None = None,
                        tenant_id: str = "default") -> list[dict[str, Any]]:

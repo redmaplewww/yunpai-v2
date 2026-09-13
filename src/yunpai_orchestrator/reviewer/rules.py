@@ -274,12 +274,30 @@ RULES: dict[str, list[Check]] = {
         Check("data.pending_close", "eq", True, action="gate:finance",
               reason="月账冻结是生效写，须 finance 门人工批准后由 _apply_m6_close_month 落库"),
     ],
+    # 单据台账写工具（B2 报价单 / 对账单）：三段式同款——工具只写 trial 草稿并声明
+    # ``pending_document_commit``，生效由 approve 后的 `_apply_m6_document_commit` 执行
+    # （该钩子按 `data.pending_document_commit` + `doc_id` 分派，与工具名无关）。
+    "save_quotation": [
+        Check("success", "eq", False, action="fail",
+              reason="报价单草稿未落库（入参非法/单号已存在）——不得当成功吞掉"),
+        Check("data.pending_document_commit", "eq", True, action="gate:finance",
+              reason="报价单是对客户的生效凭据，须 finance 门人工批准后由 "
+                     "_apply_m6_document_commit 翻 confirmed"),
+    ],
+    "save_statement": [
+        Check("success", "eq", False, action="fail",
+              reason="对账单草稿未落库（对账明细缺失/单号已存在）"),
+        Check("data.pending_document_commit", "eq", True, action="gate:finance",
+              reason="对账单是双方账务凭据，须 finance 门人工批准后由 "
+                     "_apply_m6_document_commit 翻 confirmed"),
+    ],
     # 三个内核读工具（`get_product_cost` / `audit_order_cost` / `allocate_expenses`）
     # **刻意不登记门**：纯算数、不落库（当场算 = D8 的「试算/报价预览」，分摊结果只作分析）。
     # 与 `save_costing_snapshot` 的"无门"不同性质：那一个是**写** trial 草稿而无门（D-008），
     # 这三个连库都不碰，因此既不触门也不报 W2（合同 `side_effect=none`）。
     # 缺数一律以 `cost_incomplete` + `missing` 表达（不编造、也不开补数门——
     # "某期间还没有费用事实"是正常状态，不是装配缺口）。
+    # `generate_quotation`（报价预览）同样无门：纯算数，落草稿才是写（save_quotation）。
 }
 
 #: M0 canonical 写工具（rows-S1「审查需补」）：成功即开 candidate 门。

@@ -26,8 +26,9 @@ def test_specs_loaded_count(registry):
     （save_costing_snapshot / confirm_costing_snapshot / close_month_costing /
     list_costing_snapshots / get_costing_snapshot / list_month_costing）→ 129；
     B1 第三批新增 3 件内核读工具（get_product_cost / audit_order_cost / allocate_expenses，
-    纯算数不写库）→ 132。"""
-    assert len(registry.specs) == 132
+    纯算数不写库）→ 132；B2 新增 6 件单据台账工具（报价单 generate_quotation / save_quotation /
+    list_quotations / get_quotation + 对账单 save_statement / list_statements）→ 138。"""
+    assert len(registry.specs) == 138
 
 
 def test_deprecated_and_unbound_never_visible(registry):

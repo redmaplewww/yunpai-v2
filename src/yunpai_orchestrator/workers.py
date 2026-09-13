@@ -2006,6 +2006,14 @@ HANDLERS = {
     "get_product_cost": _m6("get_product_cost"),
     "audit_order_cost": _m6("audit_order_cost"),
     "allocate_expenses": _m6("allocate_expenses"),
+    # 单据台账（B2）：报价单 / 对账单——save_* 属 propose 段（落 trial 草稿 + 开 finance 门，
+    # 生效由 `_apply_m6_document_commit` 在 approve 后翻 confirmed）；generate_* 纯算数不落库。
+    "generate_quotation": _m6("generate_quotation"),
+    "save_quotation": _m6("save_quotation"),
+    "list_quotations": _m6("list_quotations"),
+    "get_quotation": _m6("get_quotation"),
+    "save_statement": _m6("save_statement"),
+    "list_statements": _m6("list_statements"),
     # M0 自描述表识别（agent-driven file recognition，确定性安全网）
     "sample_file": sample_file,
     "ingest_recognized": ingest_recognized,

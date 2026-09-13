@@ -31,6 +31,8 @@ from .m6_cost import (
     compute_expense_allocation,
     compute_material_cost,
     compute_process_cost,
+    compute_quotation_price,
+    compute_statement,
 )
 from .m6_defaults import (
     DEFAULT_MIN_MARGIN_RATE,
@@ -597,6 +599,311 @@ async def m6_allocate_expenses(payload: dict[str, Any],
                   f"cost_incomplete={result['cost_incomplete']}")])
 
 
+# ---------------------------------------------------------------------------
+# 单据台账（B2）：报价单 / 对账单
+# ---------------------------------------------------------------------------
+#
+# 三段式照 D-005：`save_*` 属 **propose 段**（只写 ``status=trial`` 草稿 + 请财务门），
+# 生效（``trial → confirmed``）由 `graph._apply_m6_document_commit` 在 approve 后执行。
+# `generate_*` 是纯算数（不落库）——与 `get_product_cost` / `save_costing_snapshot`
+# 同一关系：先看数、再决定落草稿。
+
+M6_DOC_TYPES = {
+    "quotation": "报价单",
+    "statement": "对账单",
+}
+
+
+def _doc_date(payload: dict[str, Any]) -> str:
+    return str(payload.get("doc_date") or "") or _now_iso()[:10]
+
+
+def _next_doc_no(store: M6Store, doc_type: str, doc_date: str, tenant_id: str) -> str:
+    """确定性派生单号：``<前缀>-<日期>-<流水>``（历史单据不覆盖，查重靠显式拒绝）。"""
+    prefix = {"quotation": "QT", "statement": "ST"}.get(doc_type, "DOC")
+    head = f"{prefix}-{(doc_date or _now_iso()[:10]).replace('-', '')}"
+    existing = [row for row in store.list_documents(doc_type=doc_type, tenant_id=tenant_id)
+                if str(row.get("doc_no") or "").startswith(head)]
+    return f"{head}-{len(existing) + 1:03d}"
+
+
+def _line_costs(line: dict[str, Any],
+                products: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """解析一行的三项单位成本：**行内显式 > `products[code]` 的成本事实滚动**。
+
+    返回 ``(成本三项, 缺口)``——两者必有一为 None。**缺成本的行不给报价**：
+    把缺失成本当 0 算出来的"报价"就是编造（老仓 `_num(None)=0.0` 正是这么算的），
+    本函数宁可让该行进 ``missing``。
+    """
+    code = str(line.get("product_code") or "").strip()
+    explicit = {key: line.get(key) for key in ("unit_material", "unit_labor", "unit_overhead")}
+    if all(value not in (None, "") for value in explicit.values()):
+        return {key: _num(value) for key, value in explicit.items()}, None
+    spec = products.get(code) if isinstance(products, dict) else None
+    if not isinstance(spec, dict):
+        return None, {"reason": "missing_unit_cost", "product_code": code}
+    breakdown = _cost_breakdown({**spec, "product_code": code})
+    if breakdown["cost_incomplete"]:
+        return None, {"reason": "unit_cost_incomplete", "product_code": code,
+                      "missing": breakdown["missing_inputs"] + breakdown["resolved"]["missing"]}
+    return {
+        "unit_material": breakdown["material"]["unit_material_cost"],
+        "unit_labor": breakdown["process"]["unit_labor_cost"],
+        "unit_overhead": breakdown["process"]["unit_overhead_cost"],
+    }, None
+
+
+def _quotation_lines(payload: dict[str, Any]) -> dict[str, Any]:
+    """**共用的报价预算**：逐行 (材料+人工+制费)×(1+加价率) → 行小计与总计。
+
+    `generate_quotation`（报价预览）与 `save_quotation`（落草稿）共用，避免
+    "预览一个价、落库另一个价"。成本项缺（行内三项未给且 `products[code]` 也滚不出来）
+    → 该行进 ``missing`` **不计入合计**（见 `_line_costs`）；加价率没给时按 0 算但标
+    ``markup_assumed=True``——**不能让 0 加价冒充谈好的报价**。
+    """
+    raw_lines = payload.get("lines") if isinstance(payload.get("lines"), list) else []
+    products = payload.get("products") if isinstance(payload.get("products"), dict) else {}
+    default_markup = payload.get("markup_rate")
+    out_lines: list[dict[str, Any]] = []
+    missing: list[dict[str, Any]] = []
+    total = 0.0
+    markup_assumed = False
+
+    for index, line in enumerate(raw_lines, start=1):
+        if not isinstance(line, dict):
+            missing.append({"line": index, "reason": "invalid_row"})
+            continue
+        product_code = str(line.get("product_code") or "").strip()
+        qty = _num_optional(line.get("qty", line.get("quantity")))
+        if not product_code or qty is None:
+            missing.append({"line": index, "reason": "missing_product_code_or_qty"})
+            continue
+        costs, gap = _line_costs(line, products)
+        if gap is not None:
+            missing.append({"line": index, **gap})
+            continue
+        markup = line.get("markup_rate") if line.get("markup_rate") not in (None, "") \
+            else default_markup
+        if markup in (None, ""):
+            markup_assumed = True
+            markup = 0.0
+        unit = compute_quotation_price(costs["unit_material"], costs["unit_labor"],
+                                      costs["unit_overhead"], markup_rate=markup)
+        line_total = round(unit["quote_price"] * qty, 4)
+        total += line_total
+        out_lines.append({
+            "product_code": product_code, "qty": qty,
+            **costs,
+            "base_cost": unit["base_cost"], "markup_rate": unit["markup_rate"],
+            "quote_price": unit["quote_price"], "line_total": line_total,
+        })
+    return {
+        "lines": out_lines,
+        "total": round(total, 4),
+        "missing": missing,
+        "markup_assumed": markup_assumed,
+        "assumptions": {
+            "markup_rate_assumed": markup_assumed,
+            "pending_finance_confirmation": list(PENDING_FINANCE_CONFIRMATION),
+        },
+    }
+
+
+def _statement_totals(payload: dict[str, Any]) -> dict[str, Any]:
+    """**共用的对账预算**：期初 + Σin − Σout（`compute_statement`，纯确定性）。
+
+    对账明细优先取 `transactions`（direction in/out）；只给 `lines`/`amount` 时原样采信
+    调用方给的事实（不做二次推算）。
+    """
+    transactions = payload.get("transactions")
+    if isinstance(transactions, list) and transactions:
+        computed = compute_statement(payload.get("opening_balance"), transactions)
+        return {**computed, "source": "transactions",
+                "lines": computed["lines"],
+                "amount": computed["closing_balance"]}
+    lines = payload.get("lines") if isinstance(payload.get("lines"), list) else []
+    return {"opening_balance": _num(payload.get("opening_balance")), "inflow": None,
+            "outflow": None,
+            "closing_balance": (_num_optional(payload.get("amount"))
+                                if payload.get("amount") not in (None, "") else None),
+            "lines": lines, "source": "explicit_lines" if lines else "missing",
+            "amount": _num_optional(payload.get("amount"))}
+
+
+async def m6_generate_quotation(payload: dict[str, Any],
+                                ctx: dict[str, Any]) -> dict[str, Any]:
+    """`generate_quotation`：算一版报价（**不落库**）——报价预览。
+
+    纯确定性（R-QT-1）：行报价 = (材料+人工+制费)×(1+加价率)。要看数就用本工具，
+    要落成可追溯的客户台账请用 `save_quotation`（它走 finance 门）。
+    """
+    quote = _quotation_lines(payload)
+    if not quote["lines"]:
+        return _fail("INVALID_INPUT", "报价行全不可用（缺 product_code/qty）", ctx,
+                     "m6-quotation", data={"missing": quote["missing"]})
+    data = {"quote_no": str(payload.get("quote_no") or ""),
+            "customer_code": str(payload.get("customer_code") or ""),
+            "doc_date": _doc_date(payload),
+            "lines": quote["lines"], "total": quote["total"],
+            "missing": quote["missing"], "assumptions": quote["assumptions"]}
+    return _ok(data, ctx, "m6-quotation", evidence=[
+        _evidence(f"quotation:{data['quote_no'] or 'preview'}",
+                  f"报价预览（不落库）：{len(quote['lines'])} 行，合计 {quote['total']}，"
+                  f"加价率按假设={quote['markup_assumed']}")])
+
+
+def _propose_document(payload: dict[str, Any], ctx: dict[str, Any], *, doc_type: str,
+                      direction: str, lines: Any, amount: Any,
+                      extra_evidence: dict[str, Any] | None = None) -> dict[str, Any]:
+    """**propose 段共用落库**：写 ``status=trial`` 单据 + 回报待财务确认。
+
+    单号已存在时**显式拒绝**（``DOC_NO_EXISTS``）——同号单据不静默覆盖，
+    由人决定新建/覆盖/查看（计划 §6 的 B 问题）。
+    """
+    tenant_id = _tenant(ctx)
+    store = _store(ctx)
+    doc_date = _doc_date(payload)
+    counterparty = str(payload.get("counterparty_code") or payload.get("customer_code") or "")
+    doc_no = str(payload.get("doc_no") or "")
+    if doc_no and store.find_document(doc_type=doc_type, doc_no=doc_no,
+                                      tenant_id=tenant_id) is not None:
+        return _fail("DOC_NO_EXISTS",
+                     f"{M6_DOC_TYPES.get(doc_type, doc_type)} {doc_no} 已存在"
+                     "（同号单据不覆盖；如确需新版请换单号）",
+                     ctx, f"m6-{doc_type}", data={"doc_no": doc_no})
+    doc_no = doc_no or _next_doc_no(store, doc_type, doc_date, tenant_id)
+    doc_id = str(payload.get("doc_id") or "") or f"{doc_type.upper()}-{doc_no}"
+    if store.get_document(doc_id, tenant_id) is not None:
+        return _fail("DOC_ID_EXISTS", f"单据 {doc_id} 已存在", ctx, f"m6-{doc_type}",
+                     data={"doc_id": doc_id})
+    evidence = {
+        "doc_type": doc_type, "direction": direction,
+        "line_count": len(lines) if isinstance(lines, list) else 0,
+        "assumptions": payload.get("assumptions") or {},
+        **(extra_evidence or {}),
+    }
+    saved = store.save_document(
+        doc_id=doc_id, doc_no=doc_no, doc_type=doc_type, counterparty_code=counterparty,
+        doc_date=doc_date, direction=direction, amount=amount, lines=lines,
+        source_ref=str(payload.get("source_ref") or ""), evidence=evidence,
+        task_id=str((ctx or {}).get("task_id") or ""), tenant_id=tenant_id)
+    if not saved.get("success"):
+        return _fail(str(saved.get("code") or "SAVE_FAILED"),
+                     f"{M6_DOC_TYPES.get(doc_type, doc_type)}草稿未落库", ctx,
+                     f"m6-{doc_type}", data={"doc_no": doc_no})
+    data = {
+        **saved, "doc_no": doc_no, "doc_date": doc_date, "counterparty_code": counterparty,
+        "direction": direction, "amount": amount, "lines": lines,
+        # 约定字段：finance 门批准后由 `graph._apply_m6_document_commit` 据此翻 confirmed
+        "pending_document_commit": True,
+    }
+    return _ok(data, ctx, f"m6-{doc_type}", evidence=[
+        _evidence(f"document:{doc_id}",
+                  f"{M6_DOC_TYPES.get(doc_type, doc_type)}草稿（trial）：单号 {doc_no}，"
+                  f"金额 {amount}，待 finance 门批准后生效")])
+
+
+async def m6_save_quotation(payload: dict[str, Any],
+                            ctx: dict[str, Any]) -> dict[str, Any]:
+    """`save_quotation`（**propose 段**）：算报价 → 落 ``trial`` 草稿 → 请财务门。
+
+    报价单是对客户的**生效凭据**，故：工具自身只落草稿（可追溯、不构成对外承诺），
+    approve 后由 `_apply_m6_document_commit` 翻 ``confirmed``；reject 路径草稿保留但**不生效**。
+    """
+    quote = _quotation_lines(payload)
+    if not quote["lines"]:
+        return _fail("INVALID_INPUT", "报价行全不可用（缺 product_code/qty）", ctx,
+                     "m6-quotation", data={"missing": quote["missing"]})
+    data = _propose_document(
+        {**payload, "assumptions": quote["assumptions"]}, ctx, doc_type="quotation",
+        direction=str(payload.get("direction") or "out"), lines=quote["lines"],
+        amount=quote["total"],
+        extra_evidence={"total": quote["total"], "missing": quote["missing"]})
+    if data.get("success"):
+        data["data"]["total"] = quote["total"]
+        data["data"]["lines"] = quote["lines"]
+        data["data"]["missing"] = quote["missing"]
+        data["data"]["assumptions"] = quote["assumptions"]
+    return data
+
+
+async def m6_list_quotations(payload: dict[str, Any],
+                             ctx: dict[str, Any]) -> dict[str, Any]:
+    """`list_quotations`：报价单台账（trial 草稿与 confirmed 生效都列出并明示状态）。"""
+    rows = _store(ctx).list_documents(
+        doc_type="quotation", status=str(payload.get("status") or "") or None,
+        counterparty_code=str(payload.get("customer_code")
+                              or payload.get("counterparty_code") or "") or None,
+        tenant_id=_tenant(ctx))
+    limit = _limit(payload, 50)
+    return _ok({"quotations": rows[:limit], "count": len(rows), "limit": limit},
+               ctx, "m6-list-quotations")
+
+
+async def m6_get_quotation(payload: dict[str, Any],
+                           ctx: dict[str, Any]) -> dict[str, Any]:
+    """`get_quotation`：按单号或主键读回一张报价单（含明细行）。"""
+    store = _store(ctx)
+    tenant_id = _tenant(ctx)
+    doc_id = str(payload.get("doc_id") or "")
+    doc_no = str(payload.get("doc_no") or payload.get("quote_no") or "")
+    doc = store.get_document(doc_id, tenant_id) if doc_id else None
+    if doc is None and doc_no:
+        doc = store.find_document(doc_type="quotation", doc_no=doc_no, tenant_id=tenant_id)
+        doc = store.get_document(str(doc["doc_id"]), tenant_id) if doc else None
+    if not doc_id and not doc_no:
+        return _fail("INVALID_INPUT", "需要 doc_no（报价单号）或 doc_id（单据主键）之一",
+                     ctx, "m6-get-quotation")
+    if doc is None:
+        return _fail("NOT_FOUND", f"报价单 {doc_id or doc_no} 不存在", ctx,
+                     "m6-get-quotation", data={"doc_id": doc_id, "doc_no": doc_no})
+    return _ok({"quotation": doc}, ctx, "m6-get-quotation")
+
+
+async def m6_save_statement(payload: dict[str, Any],
+                            ctx: dict[str, Any]) -> dict[str, Any]:
+    """`save_statement`（**propose 段**）：期末 = 期初 + Σin − Σout → 落 ``trial`` 草稿。
+
+    `statement_type`（customer/supplier）决定方向：我方对客户 = 出（``out``）、
+    对供应商 = 入（``in``）；也可显式给 ``direction`` 覆盖。
+    """
+    totals = _statement_totals(payload)
+    if totals["source"] == "missing":
+        return _fail("INVALID_INPUT",
+                     "对账明细缺失：请给 transactions（含 direction/amount）或显式 lines",
+                     ctx, "m6-statement")
+    statement_type = str(payload.get("statement_type") or "")
+    direction = str(payload.get("direction") or
+                    ("in" if statement_type == "supplier" else "out"))
+    data = _propose_document(
+        payload, ctx, doc_type="statement", direction=direction,
+        lines=totals["lines"], amount=totals["amount"],
+        extra_evidence={"statement_type": statement_type,
+                        "opening_balance": totals["opening_balance"],
+                        "inflow": totals["inflow"], "outflow": totals["outflow"],
+                        "closing_balance": totals["closing_balance"],
+                        "totals_source": totals["source"]})
+    if data.get("success"):
+        data["data"].update({"statement_type": statement_type,
+                             "opening_balance": totals["opening_balance"],
+                             "inflow": totals["inflow"], "outflow": totals["outflow"],
+                             "closing_balance": totals["closing_balance"],
+                             "totals_source": totals["source"]})
+    return data
+
+
+async def m6_list_statements(payload: dict[str, Any],
+                             ctx: dict[str, Any]) -> dict[str, Any]:
+    """`list_statements`：对账单台账（双向：customer 出 / supplier 入）。"""
+    rows = _store(ctx).list_documents(
+        doc_type="statement", status=str(payload.get("status") or "") or None,
+        counterparty_code=str(payload.get("counterparty_code") or "") or None,
+        tenant_id=_tenant(ctx))
+    limit = _limit(payload, 50)
+    return _ok({"statements": rows[:limit], "count": len(rows), "limit": limit},
+               ctx, "m6-list-statements")
+
+
 M6_HANDLERS: dict[str, Any] = {
     "save_costing_snapshot": m6_save_costing_snapshot,
     "confirm_costing_snapshot": m6_confirm_costing_snapshot,
@@ -608,4 +915,11 @@ M6_HANDLERS: dict[str, Any] = {
     "get_product_cost": m6_get_product_cost,
     "audit_order_cost": m6_audit_order_cost,
     "allocate_expenses": m6_allocate_expenses,
+    # 单据台账（B2）：报价单 / 对账单——写走 propose（trial 草稿）+ finance 门
+    "generate_quotation": m6_generate_quotation,
+    "save_quotation": m6_save_quotation,
+    "list_quotations": m6_list_quotations,
+    "get_quotation": m6_get_quotation,
+    "save_statement": m6_save_statement,
+    "list_statements": m6_list_statements,
 }
