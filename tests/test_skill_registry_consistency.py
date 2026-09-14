@@ -7,6 +7,10 @@ import pytest
 
 from yunpai_orchestrator.orchestrator.router import SKILL_USAGE_ORDER
 from yunpai_orchestrator.llm import QwenConfig, QwenRouter
+from yunpai_orchestrator.m6_tooling import (
+    M6_FINANCE_SKILL_OPERATION_MAP,
+    M6_LEDGER_SKILL_OPERATION_MAP,
+)
 from yunpai_orchestrator.registry import build_default_registry
 from yunpai_orchestrator.skills import (
     M1_SKILL_OPERATION_MAP,
@@ -26,6 +30,9 @@ _REAL_OP_MAPS: dict[str, dict[str, str]] = {
     "yunpai-m2-bom-sop": M2_SKILL_OPERATION_MAP,
     "yunpai-m3-material-planning": M3_SKILL_OPERATION_MAP,
     "yunpai-m4-procurement": M4_SKILL_OPERATION_MAP,
+    # M6 的两个 Skill 从一开始就导出常量（F-008 / B7），不进 _INLINE_OP_MAPS 镜像。
+    "yunpai-m6-finance": M6_FINANCE_SKILL_OPERATION_MAP,
+    "yunpai-m6-ledger": M6_LEDGER_SKILL_OPERATION_MAP,
 }
 
 #: M0/M5 的 operation map 目前仍内联在 handler 里（无导出常量），只能保留镜像；

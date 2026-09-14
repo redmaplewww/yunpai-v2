@@ -17,6 +17,10 @@ from .m3_m4_tooling import (
     M4_SKILL_OPERATION_MAP,
     unique_tools,
 )
+from .m6_tooling import (
+    M6_FINANCE_SKILL_OPERATION_MAP,
+    M6_LEDGER_SKILL_OPERATION_MAP,
+)
 from .contracts import normalize_contract_result
 
 
@@ -393,6 +397,29 @@ async def m5_lifecycle_control(payload: dict[str, Any], context: dict[str, Any])
     )
 
 
+async def m6_finance_control(payload: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    """M6「算」：成本/利润审计、报价与对账预览、工资、效益分摊、库存财务视图。
+
+    全部是**纯算数只读**（无副作用、无门、不落库）：输入事实由装配层给，缺数一律标
+    ``cost_incomplete``/``missing``，绝不编造。落库/门在 ``yunpai-m6-ledger`` 侧。
+    """
+    return await _dispatch_registered_tool(
+        "yunpai-m6-finance", payload, context, M6_FINANCE_SKILL_OPERATION_MAP,
+    )
+
+
+async def m6_ledger_control(payload: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    """M6「记」：成本快照/明细/月结/报价单台账/对账单/送货单/资产台账。
+
+    写操作照 **三段式**（D-005）：propose 段只写草稿（``status=trial``）或只回报待确认
+    事实，生效落在 ``finance`` 门批准之后的 ``graph._apply_m6_*`` commit 段。本 Skill
+    **不写 M0/M5**，只写自己的 m6 库（红线由 operation map 白名单在代码级兜住）。
+    """
+    return await _dispatch_registered_tool(
+        "yunpai-m6-ledger", payload, context, M6_LEDGER_SKILL_OPERATION_MAP,
+    )
+
+
 def build_default_skill_registry(tool_registry: Any | None = None) -> SkillRegistry:
     """构建默认 Skill 面；``tool_registry`` 为 Skill 内部派发工具所用（见 §裁决 1）。
 
@@ -462,5 +489,19 @@ def build_default_skill_registry(tool_registry: Any | None = None) -> SkillRegis
         tools=("ingest_m5_planning_snapshot", "get_m5_schedule", "list_m5_schedules",
                "replan_m5_schedule", "get_m5_pmc_progress", "dispatch_m5_schedule",
                "get_m5_execution_summary"),
+    ))
+    registry.register(SkillSpec(
+        name="yunpai-m6-finance",
+        description="M6 算：产品/订单成本核算、利润审计、报价与对账预览、计件/月薪工资、模具机器效益分摊、库存财务视图。纯确定性计算，缺数据标 cost_incomplete，不编造、不落库、不写 M0/M5。",
+        handler=m6_finance_control,
+        tags=("m6", "finance", "cost", "quotation", "statement", "payroll", "inventory"),
+        tools=unique_tools(M6_FINANCE_SKILL_OPERATION_MAP),
+    ))
+    registry.register(SkillSpec(
+        name="yunpai-m6-ledger",
+        description="M6 记：成本快照与明细、月结汇总、报价单/对账单台账、送货单凭据与资产台账。写操作照三段式（先批准后落库），只写自己的 m6 库，不写 M0/M5。",
+        handler=m6_ledger_control,
+        tags=("m6", "finance", "ledger", "costing", "snapshot", "document", "asset"),
+        tools=unique_tools(M6_LEDGER_SKILL_OPERATION_MAP),
     ))
     return registry

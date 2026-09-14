@@ -61,6 +61,8 @@ def test_skill_catalog_exposes_versioned_skill_ids():
         "yunpai-m4-procurement",
         "yunpai-m5-pmc",
         "yunpai-m5-pmc-lifecycle",
+        "yunpai-m6-finance",
+        "yunpai-m6-ledger",
     }
     assert set(catalog) == expected
     assert "solve_scheduling" in catalog["yunpai-m5-pmc"]["tools"]

@@ -16,7 +16,9 @@ from ..llm import QwenRouter
 from ..workflow_registry import KNOWN_WORKFLOWS
 from .workflow_engine import WorkflowEngine
 
-#: 高阶 Skill 使用顺序偏序（legacy agents.py:29-38 原样迁移）。
+#: 高阶 Skill 使用顺序偏序（legacy agents.py:29-38 原样迁移；M6 按 F-008 追加）。
+#: M6 排在末位：它消费的 M0 canonical 事实与 M5 报工事实都由前面的 Skill 产出，
+#: 成本核算/台账是链尾（见《M6-开发计划-v2口径》§0「M6 = 成本核算链 + 成本明细账」）。
 SKILL_USAGE_ORDER: tuple[str, ...] = (
     "business-data-identification",
     "yunpai-m1-document-parser",
@@ -26,6 +28,8 @@ SKILL_USAGE_ORDER: tuple[str, ...] = (
     "yunpai-m4-procurement",
     "yunpai-m5-pmc",
     "yunpai-m5-pmc-lifecycle",
+    "yunpai-m6-finance",
+    "yunpai-m6-ledger",
 )
 
 #: 触发"原始文件→主链"回退的附件特征（最小规则，替代旧关键词大表）。
