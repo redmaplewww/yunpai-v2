@@ -29,8 +29,10 @@ def test_specs_loaded_count(registry):
     纯算数不写库）→ 132；B2 新增 6 件单据台账工具（报价单 generate_quotation / save_quotation /
     list_quotations / get_quotation + 对账单 save_statement / list_statements）→ 138；
     B3 新增 2 件凭据工具（get_delivery_note / generate_statement）→ 140；
-    B4 新增 3 件资产台账工具（get_asset_ledger / upsert_asset_ledger / compute_asset_benefit）→ 143。"""
-    assert len(registry.specs) == 143
+    B4 新增 3 件资产台账工具（get_asset_ledger / upsert_asset_ledger / compute_asset_benefit）→ 143；
+    B5 新增 1 件库存财务视图（get_inventory_finance_view）→ 144；B6 新增 3 件（list_orders /
+    calculate_piece_pay / calculate_monthly_pay）→ 147。"""
+    assert len(registry.specs) == 147
 
 
 def test_deprecated_and_unbound_never_visible(registry):

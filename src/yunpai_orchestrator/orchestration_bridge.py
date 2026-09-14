@@ -1031,6 +1031,11 @@ def read_inventory_facts(state: RunState) -> list[dict[str, Any]]:
                 "lot_no": str(entity.get("lot_no") or ""),
                 "qc_status": str(entity.get("qc_status") or "released"),
                 "unit": str(entity.get("unit") or ""),
+                # stock_class（库存四态）必须带出：**D5「有库存且态=raw 走库存成本价」
+                # 依赖它**——投影里漏掉它就等于所有 canonical 库存都"态未知"，
+                # 那条分支永远触发不了（即使数据侧补了字段）。缺失留空串，
+                # 由 `resolve_material_prices` / 库存视图按"态未知"fail-closed。
+                "stock_class": str(entity.get("stock_class") or ""),
             })
     # 非关键字段降级默认值：缺 warehouse/lot/qc/locked_qty/received_at 不影响
     # 「按物料汇总可用库存」，桥接补合理默认。
@@ -1977,4 +1982,46 @@ def bridge_payload(state: RunState, tool: str) -> dict[str, Any]:
             if request.get(key) not in (None, ""):
                 payload[key] = request[key]
         return payload
+    # ── M6 库存财务视图（B5）：库存四态 + 在途（M4B 追踪） ──────────────────
+    if tool == "get_inventory_finance_view":
+        payload = {
+            "inventory": read_inventory_facts(state),
+            "purchase_tracking_rows": read_m4_tracking_rows(state),
+        }
+        # unit_costs（材料编码→单价）：v2 的 inventory 无价格字段，金额只能外部带入；
+        # 不给即由内核标 cost_incomplete（不编造成本）。
+        for key in ("unit_costs", "valuation_price_source"):
+            if request.get(key) not in (None, ""):
+                payload[key] = request[key]
+        return payload
+    # ── M6 订单列表（B6）：canonical `order`（已拆信封） ─────────────────────
+    if tool == "list_orders":
+        payload = {"orders": _flatten_entities(_read_m0_entities(state, "order"))}
+        for key in ("product_code", "customer_name", "period", "limit"):
+            if request.get(key) not in (None, ""):
+                payload[key] = request[key]
+        return payload
+    # ── M6 工资两件（B6）：**v2 没有 canonical 工资事实面**，只能显式给 ──────────
+    #
+    # 老仓的四类工资事实分别取自 canonical `usage_log`（报工）/ `piece_rate`（计件单价）/
+    # `salary_standard`（月薪）/ `attendance_summary`（考勤），且 `_m6_report_events_from_usage_logs`
+    # 明确禁止把 `quantity` 当报工数量（那是**资产使用数量**）。**v2 这四张面一张都没有**
+    # （`canonical_schema` 与 `ENTITY_TYPES` 实测 0 命中）——所以这里不做任何"拿别的实体顶替"
+    # 的推断，四类事实一律只从调用方取；不给即由内核标 `missing`（fail-closed，不编造）。
+    # 要让它们有 canonical 来源，需按 B0b 建 `expense`/`delivery_note` 的先例另立实体 + facade
+    # （见交接"遗留"）。
+    if tool == "calculate_piece_pay":
+        # 只放**非空列表**键：契约里 `report_events`/`piece_rates` 声明为 array，
+        # 放 `None` 会被 `registry.call` 的 input_schema 校验直接拒掉（装配产出必须
+        # 能通过契约校验，否则工具永远调不起来）。缺键时内核按"没有事实"处理 → missing。
+        payload: dict[str, Any] = {}
+        for key in ("report_events", "piece_rates"):
+            if isinstance(request.get(key), list) and request[key]:
+                payload[key] = request[key]
+        return payload
+    if tool == "calculate_monthly_pay":
+        return {key: request.get(key)
+                for key in ("salary_standards", "attendance", "piece_pay",
+                            "overtime_multiplier", "work_days", "hours_per_day")
+                if request.get(key) not in (None, "")}
     return {}

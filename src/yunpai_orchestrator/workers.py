@@ -2023,6 +2023,13 @@ HANDLERS = {
     "get_asset_ledger": _m6("get_asset_ledger"),
     "upsert_asset_ledger": _m6("upsert_asset_ledger"),
     "compute_asset_benefit": _m6("compute_asset_benefit"),
+    # 库存财务视图（B5）：四态分账 + 在途，纯算数只读、无门、不落库。
+    "get_inventory_finance_view": _m6("get_inventory_finance_view"),
+    # 订单列表 + 工资两件（B6）：canonical 读 + 纯算数，三件都不落库、无门。
+    # 工资是敏感数据，但 M6 本层不判授权（敏感读的保护属身份层权限，见 rules.py M6 块）。
+    "list_orders": _m6("list_orders"),
+    "calculate_piece_pay": _m6("calculate_piece_pay"),
+    "calculate_monthly_pay": _m6("calculate_monthly_pay"),
     # M0 自描述表识别（agent-driven file recognition，确定性安全网）
     "sample_file": sample_file,
     "ingest_recognized": ingest_recognized,

@@ -25,7 +25,9 @@ from .m6_defaults import (  # 口径单一事实源：本文件不再重复默�
     DEFAULT_HOURS_PER_DAY,
     DEFAULT_MIN_MARGIN_RATE,
     DEFAULT_OVERTIME_MULTIPLIER,
+    DEFAULT_VALUATION_PRICE_SOURCE,
     DEFAULT_WORK_DAYS,
+    PENDING_FINANCE_CONFIRMATION,
 )
 
 
@@ -600,6 +602,124 @@ def compute_expense_allocation(
         ],
         "by_product": by_product,
         "assumptions": assumptions,
+        "cost_incomplete": bool(missing),
+        "missing": missing,
+    }
+
+
+# ---------------------------------------------------------------------------
+# R-INV-FIN：财务口径库存视图
+# ---------------------------------------------------------------------------
+
+#: 库存四态（口径名 → 中文标签）。**与 `canonical_schema.STOCK_CLASSES` 同源**，但本模块
+#: 按红线不 import 任何 v2 模块，故此处保留副本；任何一侧增删态都必须手工同步。
+STOCK_CLASS_LABELS: dict[str, str] = {
+    "raw": "原料在库",
+    "finished": "成品在库",
+    "semi": "半成品在库",
+    "wip": "在制",
+}
+
+#: 态缺失/未知的归集名（**单列一栏，不归到任何一态**）。
+UNKNOWN_CLASS = "unknown"
+
+#: M4 追踪里表示「已入库」的状态值（与 `orchestration_bridge.received_purchase_rows` 同口径）。
+RECEIVED_ARRIVAL_STATUS = "received"
+
+
+def _empty_bucket(name: str, label: str) -> dict[str, Any]:
+    return {"stock_class": name, "label": label, "line_count": 0,
+            "total_qty": 0.0, "total_amount": 0.0, "amount_incomplete": False}
+
+
+def compute_inventory_finance_view(
+    inventory: Any,
+    *,
+    purchase_tracking_rows: Any = None,
+    unit_costs: Any = None,
+    valuation_price_source: Any = None,
+) -> dict[str, Any]:
+    """R-INV-FIN：财务口径库存视图（四态分账 + 在途）。
+
+    三条口径（与 D5 / D-006 同源，全部 fail-closed）：
+
+    1. **态缺失/未知 → 单列 ``unknown``**，绝不归到任何一态（不猜"有库存"；与
+       `resolve_material_prices` 的 D5 定价口径同源）——态明确但不在四态内的值另计
+       ``unknown_stock_class``。
+    2. **金额只在能取到单价时给**：单价来自 ``unit_costs``（材料编码 → 单价，**事实值**，
+       由装配层从 BOM 价/资产台账取，取不到就别给）；任一行缺单价 → 该行进 ``missing``
+       且整项 ``cost_incomplete``（**不编造成本**）。这是 v2 现状的必然结果：
+       `inventory` 实体**没有价格字段**，所以金额永远来自外部带入的成本。
+    3. **在途只认状态明确的行**：``arrival_status`` 非空且非 ``received`` → 在途；
+       **状态为空 → 归 ``unknown_status``**（不猜它在路上）。
+
+    ``by_class.finished`` 即计划所称**成品账**（不另设重复字段）。
+    """
+    rows = [row for row in (inventory if isinstance(inventory, list) else [])
+            if isinstance(row, dict)]
+    costs = unit_costs if isinstance(unit_costs, dict) else {}
+
+    by_class: dict[str, dict[str, Any]] = {
+        name: _empty_bucket(name, label) for name, label in STOCK_CLASS_LABELS.items()
+    }
+    by_class[UNKNOWN_CLASS] = _empty_bucket(UNKNOWN_CLASS, "态未标明（分不清态）")
+
+    missing: list[dict[str, Any]] = []
+    for index, row in enumerate(rows, start=1):
+        code = str(row.get("material_code") or "").strip()
+        raw_class = str(row.get("stock_class") or "").strip()
+        if raw_class in STOCK_CLASS_LABELS:
+            bucket = by_class[raw_class]
+        else:
+            bucket = by_class[UNKNOWN_CLASS]
+            if raw_class:
+                missing.append({"line": index, "material_code": code,
+                                "reason": "unknown_stock_class", "stock_class": raw_class})
+        qty = _num(row.get("available_qty"))
+        bucket["line_count"] += 1
+        bucket["total_qty"] = round(bucket["total_qty"] + qty, 4)
+        unit_cost = _num_optional(costs.get(code)) if code else None
+        if unit_cost is None:
+            # 缺单价不是「0 元」，是「算不出金额」——标缺失，不把 0 混进合计。
+            bucket["amount_incomplete"] = True
+            missing.append({"line": index, "material_code": code,
+                            "reason": "missing_unit_cost",
+                            "stock_class": bucket["stock_class"]})
+            continue
+        bucket["total_amount"] = round(bucket["total_amount"] + qty * unit_cost, 4)
+
+    tracking = [row for row in (purchase_tracking_rows
+                                if isinstance(purchase_tracking_rows, list) else [])
+                if isinstance(row, dict)]
+    in_transit: list[dict[str, Any]] = []
+    unknown_status: list[dict[str, Any]] = []
+    for index, row in enumerate(tracking, start=1):
+        status = str(row.get("arrival_status") or "").strip()
+        entry = {
+            "line": index,
+            "material_code": str(row.get("material_code")
+                                 or row.get("internal_material_no") or ""),
+            "supplier": str(row.get("supplier_name") or row.get("supplier_code") or ""),
+            "quantity": _num_optional(row.get("quantity") or row.get("arrival_qty")),
+            "arrival_status": status,
+        }
+        if not status:
+            unknown_status.append(entry)
+        elif status != RECEIVED_ARRIVAL_STATUS:
+            in_transit.append(entry)
+
+    return {
+        "by_class": {name: by_class[name]
+                     for name in (*STOCK_CLASS_LABELS, UNKNOWN_CLASS)},
+        "in_transit": {"line_count": len(in_transit), "lines": in_transit},
+        "unknown_status": {"line_count": len(unknown_status), "lines": unknown_status},
+        "valuation_price_source": str(valuation_price_source
+                                      or DEFAULT_VALUATION_PRICE_SOURCE),
+        "valuation_price_source_assumed": not bool(valuation_price_source),
+        "assumptions": {
+            "valuation_price_source_assumed": not bool(valuation_price_source),
+            "pending_finance_confirmation": list(PENDING_FINANCE_CONFIRMATION),
+        },
         "cost_incomplete": bool(missing),
         "missing": missing,
     }

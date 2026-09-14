@@ -1146,6 +1146,202 @@
       },
       "execution": "sync",
       "local_only": true
+    },
+    {
+      "name": "get_inventory_finance_view",
+      "description": "财务口径的**库存视图**（B5）：按库存四态（原料在库 raw / 成品在库 finished / 半成品在库 semi / 在制 wip）分账，并给出**在途**（M4 采购追踪里尚未入库的行）。当用户问「现在库存值多少钱」「原料/成品各结存多少」「在途还有多少」时使用。三条口径全部 fail-closed：① 库存态缺失/未知 → 单列 unknown 一栏，**绝不归到任何一态**（不猜「有库存」）；② **金额只在能取到单价时给**——v2 的 inventory 实体**没有价格字段**，金额必须由 unit_costs（材料编码→单价，来自 BOM 价/资产台账）带入，取不到即该行进 missing 且整项 cost_incomplete（**绝不编造成本**）；③ 追踪行 arrival_status 为空 → 单列 unknown_status（**不猜它在路上**）。by_class.finished 即「成品账」。纯算数只读、无门、不落库。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m6/v1/inventory-finance-view",
+        "timeout_s": 60
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "inventory": {
+            "type": "array",
+            "description": "库存事实（装配层给，勿手填）：[{material_code, available_qty, stock_class?}]；stock_class ∈ raw/finished/semi/wip，缺失或未知按「分不清态」处理。",
+            "items": {
+              "type": "object"
+            }
+          },
+          "purchase_tracking_rows": {
+            "type": "array",
+            "description": "M4B 采购追踪行（装配层从 list_m4_tracking 取）：用于判在途。arrival_status=received 为已入库（不算在途）、其他非空值为在途、空为状态未知。",
+            "items": {
+              "type": "object"
+            }
+          },
+          "unit_costs": {
+            "type": "object",
+            "description": "材料编码→单价映射（事实值，用于算金额）。v2 的 inventory 无价格字段，故金额只能由此带入；不给则该行进 missing + cost_incomplete（绝不编造成本）。"
+          },
+          "valuation_price_source": {
+            "type": "string",
+            "enum": [
+              "bom_price",
+              "latest_purchase_price"
+            ],
+            "description": "库存估价单价来源（默认取口径层 DEFAULT_VALUATION_PRICE_SOURCE=bom_price，未给出即标 assumed=true）。"
+          }
+        },
+        "required": []
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "execution": "sync",
+      "local_only": true
+    },
+    {
+      "name": "list_orders",
+      "description": "列出 M0 canonical 里**已落库的订单**（B6）：字段照 canonical `order`（order_id / product_code / product_name / quantity / due_date / customer_name / unit_price / total_amount）+ 订单行数 line_count。当用户问「有哪些订单」「这个产品有哪些单」「某客户/某交期的单」时使用。过滤面：product_code / customer_name 精确匹配、period 按 due_date 前缀匹配（canonical 的 order **没有** order_date 字段，**不拿别的字段冒充下单日期**）；limit 默认 50。canonical 里没有订单时返回空列表 + missing（不编造订单）。纯算数只读、无门、不落库。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m6/v1/orders",
+        "timeout_s": 30
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "orders": {
+            "type": "array",
+            "description": "订单事实（装配层从 canonical `order` 读入并拆信封，勿手填）。",
+            "items": {
+              "type": "object"
+            }
+          },
+          "product_code": {
+            "type": "string",
+            "description": "按产品编码精确过滤。"
+          },
+          "customer_name": {
+            "type": "string",
+            "description": "按客户名精确过滤。"
+          },
+          "period": {
+            "type": "string",
+            "description": "按 due_date 前缀过滤（如 2026-09）。注意是**交期**不是下单日。"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "返回条数上限（默认 50，最大 200）。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "execution": "sync",
+      "local_only": true
+    },
+    {
+      "name": "calculate_piece_pay",
+      "description": "算**计件工资**（R-PAY-1）：Σ(合格数量 × 单价)，合格数量 = quantity_report − scrap；单价按 (station_code, product_code) 匹配并取报工日生效的版本。当用户问「某工人/某工站这个月的计件工资」时使用。⚠️ **v2 没有 canonical 工资事实面**——老仓的四张 canonical 面（`usage_log` 报工 / `piece_rate` 计件单价 / `salary_standard` 月薪 / `attendance_summary` 考勤）在 v2 **全部不存在**，所以 `report_events` 与 `piece_rates` **都必须显式给出**。缺单价的报工进 missing（missing_piece_rate），**不按 0 计、也不编造单价**（编错单价 = 多发/少发工资），**更不拿别的实体顶替**（老仓明确禁止把资产使用数量 `quantity` 当报工数量）。纯算数只读、无门、不落库。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m6/v1/piece-pay",
+        "timeout_s": 60
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "report_events": {
+            "type": "array",
+            "description": "报工事实（**v2 无 canonical 来源，必须显式给**）：[{worker_id, station_code, product_code, quantity_report, scrap?, report_date}]。",
+            "items": {
+              "type": "object"
+            }
+          },
+          "piece_rates": {
+            "type": "array",
+            "description": "计件单价（**无 canonical 来源，必须显式给**）：[{station_code, product_code, unit_rate, effective_from?, effective_to?}]。不给 → 每条报工进 missing_piece_rate。",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "execution": "sync",
+      "local_only": true
+    },
+    {
+      "name": "calculate_monthly_pay",
+      "description": "算**月度工资**（R-PAY-2，月度/混合制）：月薪标准 + 加班费 − 缺勤扣款 + 计件工资；时薪 = 月薪 ÷ 计薪天数 ÷ 每日工时，加班费 = 时薪 × 加班倍数 × 加班工时，缺勤扣款 = 时薪 × 缺勤工时。当用户问「某人这个月工资多少」「月薪加加班费」时使用。事实值：salary_standards（工人→月薪）、attendance（工人→overtime_hours/absence_hours）、piece_pay（工人→计件合计，通常取 calculate_piece_pay 的 totals）——⚠️ 这三类在 v2 **也没有 canonical 来源**（老仓分别取 `salary_standard` / `attendance_summary`），必须显式给出。口径值：**加班倍数/计薪天数/每日工时未显式给时取口径层默认**并在 assumptions 标 assumed=true（这三项在 PENDING_FINANCE_CONFIRMATION 里待工厂财务确认）。缺月薪的工人进 missing（不编造）。纯算数只读、无门、不落库。",
+      "http": {
+        "method": "POST",
+        "path": "/api/m6/v1/monthly-pay",
+        "timeout_s": 60
+      },
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "salary_standards": {
+            "type": "object",
+            "description": "工人→月薪标准（事实值）：{worker_id: 月薪}。"
+          },
+          "attendance": {
+            "type": "object",
+            "description": "工人→考勤（事实值）：{worker_id: {overtime_hours, absence_hours}}。"
+          },
+          "piece_pay": {
+            "type": "object",
+            "description": "工人→计件工资合计（事实值）：{worker_id: 金额}；通常取 calculate_piece_pay 的 totals。"
+          },
+          "overtime_multiplier": {
+            "type": "number",
+            "description": "加班倍数（口径值；默认 1.5，未给出即标 assumed=true 并附待确认清单）。"
+          },
+          "work_days": {
+            "type": "number",
+            "description": "月计薪天数（口径值；默认 21.75，未给出即标 assumed=true）。"
+          },
+          "hours_per_day": {
+            "type": "number",
+            "description": "每日工时（口径值；默认 8，未给出即标 assumed=true）。"
+          }
+        }
+      },
+      "output_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "execution": "sync",
+      "local_only": true
     }
   ]
 }

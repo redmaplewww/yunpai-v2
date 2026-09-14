@@ -30,15 +30,21 @@ from .m6_cost import (
     audit_order_cost,
     compute_asset_benefit,
     compute_expense_allocation,
+    compute_inventory_finance_view,
     compute_material_cost,
+    compute_monthly_pay,
+    compute_piece_pay,
     compute_process_cost,
     compute_quotation_price,
     compute_statement,
 )
 from .m6_defaults import (
     DEFAULT_ALLOCATION_BASIS,
+    DEFAULT_HOURS_PER_DAY,
     DEFAULT_MIN_MARGIN_RATE,
+    DEFAULT_OVERTIME_MULTIPLIER,
     DEFAULT_VALUATION_PRICE_SOURCE,
+    DEFAULT_WORK_DAYS,
     PENDING_FINANCE_CONFIRMATION,
 )
 from .m6_price_source import (
@@ -1141,6 +1147,175 @@ async def m6_compute_asset_benefit(payload: dict[str, Any],
                   f"成本来源={source}，cost_incomplete={result['cost_incomplete']}")])
 
 
+# ---------------------------------------------------------------------------
+# B5 库存财务视图（读，纯算数）
+# ---------------------------------------------------------------------------
+
+async def m6_get_inventory_finance_view(payload: dict[str, Any],
+                                        ctx: dict[str, Any]) -> dict[str, Any]:
+    """`get_inventory_finance_view`：财务口径库存视图（四态分账 + 在途），不落库。
+
+    事实来源（**装配层给，勿手填**）：`inventory`（canonical `inventory` 已拆信封，含
+    `stock_class`）与 `purchase_tracking_rows`（M4B 追踪行，用于判在途）。
+
+    金额口径：`unit_costs`（材料编码 → 单价）**只能由装配层/调用方带入**——v2 的
+    `inventory` 实体**没有价格字段**，取不到单价即进 `missing` + `cost_incomplete`
+    （**不编造成本**）。态缺失/未知单列 `unknown`（不猜"有库存"）；追踪行 `arrival_status`
+    为空单列 `unknown_status`（不猜在途）。
+
+    **无门、也不开补数门**：库存事实还没落 canonical 属于业务进度，不是装配缺口；
+    缺金额一律以 `cost_incomplete` + `missing` 表达。
+    """
+    raw_inventory = payload.get("inventory")
+    inventory = ([row for row in raw_inventory if isinstance(row, dict)]
+                 if isinstance(raw_inventory, list) else [])
+    result = compute_inventory_finance_view(
+        inventory,
+        purchase_tracking_rows=payload.get("purchase_tracking_rows"),
+        unit_costs=payload.get("unit_costs"),
+        valuation_price_source=payload.get("valuation_price_source"),
+    )
+    counts = " ".join(f"{name}:{bucket['line_count']}"
+                      for name, bucket in result["by_class"].items())
+    data = {**result, "inventory_source": "explicit" if inventory else "missing"}
+    return _ok(data, ctx, "m6-inventory-finance-view", evidence=[
+        _evidence("inventory:finance-view",
+                  f"库存财务视图：{len(inventory)} 行（{counts}），"
+                  f"在途 {result['in_transit']['line_count']} 行，"
+                  f"cost_incomplete={result['cost_incomplete']}")])
+
+
+# ---------------------------------------------------------------------------
+# B6 订单列表 + 工资两件（读，纯算数）
+# ---------------------------------------------------------------------------
+#
+# 三件都**不落库、不开门**：与 `get_product_cost` / `allocate_expenses` 同类（纯算数）。
+# 工资是敏感数据，但 M6 本层**不判授权**（与其余 M6 工具一致）——敏感读的保护属身份层
+# 权限（现有 `worker.view` 同模式），不在门层；详见 rules.py 的 M6 注释块。
+
+
+async def m6_list_orders(payload: dict[str, Any],
+                         ctx: dict[str, Any]) -> dict[str, Any]:
+    """`list_orders`：列 M0 canonical 订单（只读，不落库、无门）。
+
+    事实来源：`orders`（装配层从 canonical `order` 读入并**拆信封**）。字段照 canonical
+    `order`（`order_id`/`product_code`/`product_name`/`quantity`/`due_date`/
+    `customer_name`/`unit_price`/`total_amount`）+ `line_count`（订单行数，canonical
+    订单行不是独立实体时恒为 0，不假装有行）。
+
+    过滤面：`product_code` / `customer_name` 精确匹配、`period` 按 `due_date` 前缀匹配
+    （**canonical `order` 没有 `order_date` 字段**，不拿别的字段冒充下单日期）；
+    `limit` 截断（默认 50）。
+    """
+    raw_orders = payload.get("orders")
+    orders = ([row for row in raw_orders if isinstance(row, dict)]
+              if isinstance(raw_orders, list) else [])
+    product_code = str(payload.get("product_code") or "")
+    customer = str(payload.get("customer_name") or "")
+    period = str(payload.get("period") or "")
+    rows: list[dict[str, Any]] = []
+    for order in orders:
+        if product_code and str(order.get("product_code") or "") != product_code:
+            continue
+        if customer and str(order.get("customer_name") or "") != customer:
+            continue
+        if period and not str(order.get("due_date") or "").startswith(period):
+            continue
+        lines = order.get("lines") if isinstance(order.get("lines"), list) else []
+        rows.append({
+            "order_id": str(order.get("order_id") or ""),
+            "product_code": str(order.get("product_code") or ""),
+            "product_name": str(order.get("product_name") or ""),
+            "quantity": order.get("quantity"),
+            "due_date": str(order.get("due_date") or ""),
+            "customer_name": str(order.get("customer_name") or ""),
+            "unit_price": order.get("unit_price"),
+            "total_amount": order.get("total_amount"),
+            "line_count": len(lines),
+        })
+    total = len(rows)
+    rows = rows[:_limit(payload, 50)]
+    return _ok({"tenant_id": _tenant(ctx), "count": total, "returned": len(rows),
+                "orders": rows,
+                "source": "canonical" if orders else "missing",
+                "missing": [] if orders else [{"reason": "missing_orders"}]},
+               ctx, "m6-list-orders", evidence=[
+                   _evidence("order:list",
+                             f"订单列表：canonical 读到 {len(orders)} 条，过滤后 {total} 条、"
+                             f"返回 {len(rows)} 条")])
+
+
+async def m6_calculate_piece_pay(payload: dict[str, Any],
+                                 ctx: dict[str, Any]) -> dict[str, Any]:
+    """`calculate_piece_pay`：计件工资 = Σ(合格数量 × 单价)，纯算数不落库。
+
+    ⚠️ **v2 没有 canonical 工资事实面**：老仓的报工取自 canonical `usage_log`、单价取自
+    `piece_rate`，而 v2 的 `canonical_schema`/`ENTITY_TYPES` **一张都没有**（实测 0 命中）
+    → `report_events` 与 `piece_rates` **必须显式给出**。
+
+    `report_events` 形状：[{worker_id, station_code, product_code, quantity_report,
+    scrap?, report_date}]。缺单价的报工进 `missing`（`missing_piece_rate`）——**不按 0 计、
+    也不编造单价**（编错单价 = 多发/少发工资）；**更不拿别的实体顶替**：老仓明确禁止把
+    资产使用数量 `quantity` 当报工数量，此处同样不从 `production_daily_report` 推断。
+    """
+    raw_events = payload.get("report_events")
+    raw_rates = payload.get("piece_rates")
+    result = compute_piece_pay(raw_events, raw_rates)
+    rate_count = len(raw_rates) if isinstance(raw_rates, list) else 0
+    data = {**result,
+            "report_event_count": len(raw_events) if isinstance(raw_events, list) else 0,
+            "piece_rate_count": rate_count,
+            "piece_rate_source": "explicit" if rate_count else "missing"}
+    return _ok(data, ctx, "m6-calculate-piece-pay", evidence=[
+        _evidence("pay:piece",
+                  f"计件工资：{data['report_event_count']} 条报工 / {rate_count} 条单价，"
+                  f"算出 {len(result['totals'])} 人，missing {len(result['missing'])} 条，"
+                  f"cost_incomplete={result['cost_incomplete']}")])
+
+
+async def m6_calculate_monthly_pay(payload: dict[str, Any],
+                                   ctx: dict[str, Any]) -> dict[str, Any]:
+    """`calculate_monthly_pay`：月薪 = 月薪标准 + 加班费 − 缺勤扣款 + 计件工资（纯算数）。
+
+    事实值：`salary_standards`（worker_id → 月薪）/ `attendance`（worker_id →
+    `overtime_hours`/`absence_hours`）/ `piece_pay`（worker_id → 计件合计，通常取
+    `calculate_piece_pay` 的 `totals`）。
+    口径值：**加班倍数/计薪天数/每日工时未显式给时取 `m6_defaults`** 并在 `assumptions`
+    标 `assumed=true`（这三项在 `PENDING_FINANCE_CONFIRMATION` 里待工厂财务确认）。
+
+    仅把**显式给出**的口径传给内核——传 `None` 会让内核把默认值算成 0（时薪 0 →
+    加班费/缺勤扣款全 0），那是静默算错，不是"用默认值"。
+    """
+    explicit = {key: payload.get(key) for key in ("overtime_multiplier", "work_days",
+                                                 "hours_per_day")}
+    given = {key: value not in (None, "") for key, value in explicit.items()}
+    result = compute_monthly_pay(
+        payload.get("salary_standards"),
+        payload.get("attendance"),
+        payload.get("piece_pay"),
+        **{key: value for key, value in explicit.items() if given[key]},
+    )
+    defaults = {"overtime_multiplier": DEFAULT_OVERTIME_MULTIPLIER,
+                "work_days": DEFAULT_WORK_DAYS,
+                "hours_per_day": DEFAULT_HOURS_PER_DAY}
+    data = {**result,
+            "worker_count": len(result["rows"]),
+            **{key: (explicit[key] if given[key] else defaults[key]) for key in given},
+            "assumptions": {
+                "overtime_multiplier_assumed": not given["overtime_multiplier"],
+                "work_days_assumed": not given["work_days"],
+                "hours_per_day_assumed": not given["hours_per_day"],
+                "pending_finance_confirmation": list(PENDING_FINANCE_CONFIRMATION),
+            }}
+    return _ok(data, ctx, "m6-calculate-monthly-pay", evidence=[
+        _evidence("pay:monthly",
+                  f"月薪工资：{data['worker_count']} 人，"
+                  f"口径 assumed="
+                  f"{not given['overtime_multiplier']}/{not given['work_days']}/"
+                  f"{not given['hours_per_day']}，"
+                  f"cost_incomplete={result['cost_incomplete']}")])
+
+
 M6_HANDLERS: dict[str, Any] = {
     "save_costing_snapshot": m6_save_costing_snapshot,
     "confirm_costing_snapshot": m6_confirm_costing_snapshot,
@@ -1166,4 +1341,10 @@ M6_HANDLERS: dict[str, Any] = {
     "get_asset_ledger": m6_get_asset_ledger,
     "upsert_asset_ledger": m6_upsert_asset_ledger,
     "compute_asset_benefit": m6_compute_asset_benefit,
+    # 库存财务视图（B5）：纯算数读，不落库、无门
+    "get_inventory_finance_view": m6_get_inventory_finance_view,
+    # 订单列表 + 工资两件（B6）：纯算数读，不落库、无门
+    "list_orders": m6_list_orders,
+    "calculate_piece_pay": m6_calculate_piece_pay,
+    "calculate_monthly_pay": m6_calculate_monthly_pay,
 }

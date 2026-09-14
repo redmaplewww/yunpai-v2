@@ -311,6 +311,14 @@ RULES: dict[str, list[Check]] = {
     # B3 的 `get_delivery_note`（读 canonical）与 `generate_statement`（依据送货单/入库
     # 生成对账明细）同理——不落库即无门；依据不足时以 `missing`/`basis_source=missing`
     # 表达（不开补数门：单据事实还没落 canonical 属于业务进度，不是装配缺口）。
+    # B5/B6 四件（`get_inventory_finance_view` / `list_orders` / `calculate_piece_pay` /
+    # `calculate_monthly_pay`）同为**纯算数读**、无副作用 → 无门、也不报 W2（契约不声明
+    # `side_effect`）。工资是敏感数据，但**敏感读的保护在身份层权限、不在门层**：既有先例
+    # `worker.view`（人员主数据/花名册）同样是"权限管、无门"；且本项目至今**零个工具**在用
+    # `sensitive_data` 门（`identity.PERMISSION_CATALOG` 的 `sensitive.review` 已定义但无
+    # 接线）——M6 不擅自开这个先例，已记入交接 §8 跨线清单待裁定。
+    # 库存视图的缺金额/缺态、工资的缺单价/缺月薪，一律以 `cost_incomplete` + `missing`
+    # 表达（**不编造**，也不开补数门）。
 }
 
 #: M0 canonical 写工具（rows-S1「审查需补」）：成功即开 candidate 门。
