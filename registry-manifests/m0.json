@@ -676,7 +676,7 @@
     },
     {
       "name": "m0_delivery_notes_import",
-      "description": "M0 canonical 送货单导入 facade（F-008／M6 财务，对账依据）。身份键 note_no，必填 note_no/counterparty_code/note_date；签收面字段（signed_by/signed_at/warehouse_confirmed_by/qc_status）随单入库。canonical 为唯一主（D4/D-020），M6 侧只读、不建 create。",
+      "description": "M0 canonical 送货单导入 facade（F-008／M6 财务，对账依据）。身份键 note_no，必填 note_no/counterparty_code/note_date；签收面字段（signed_by/signed_at/warehouse_confirmed_by/qc_status）随单入库。canonical 为唯一主（D4／老仓 D-020 = v2 D-009），M6 侧只读、不建 create。",
       "http": { "method": "POST", "path": "/api/m0/v1/delivery-notes/import", "timeout_s": 120 },
       "input_schema": {
         "type": "object",

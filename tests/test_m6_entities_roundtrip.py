@@ -3,7 +3,7 @@
 B0b 当时只验到接入面（白名单、契约、门、绑定），往返留了缺口：**带完整
 ``m0.ingest.v1`` 信封**的 canonical 记录要走通「facade 发布 → M0 canonical →
 `list_expenses` / `list_delivery_notes` 只读回读」这条链，否则「M6 只读 canonical」
-这条 D4/D-020 口径只是声明。
+这条 D4／老仓 D-020（v2 记 D-009）口径只是声明。
 
 信封口径（``m0_catalog_ingest.validate_records``）：
 ``schema_version="m0.ingest.v1"`` / ``entity_type`` / ``tenant_id``（须与请求租户一致）/

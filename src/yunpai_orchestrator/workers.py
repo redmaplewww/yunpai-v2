@@ -471,7 +471,7 @@ async def m0_read_expenses(payload: dict[str, Any], ctx: dict[str, Any]) -> dict
 async def m0_read_delivery_notes(payload: dict[str, Any], ctx: dict[str, Any]) -> dict[str, Any]:
     """list_delivery_notes（F-008）：送货单事实（对账依据，只读）。
 
-    canonical `delivery_note` 为唯一主（D4/D-020），M6 不建 create；可按
+    canonical `delivery_note` 为唯一主（D4／老仓 D-020 = v2 D-009），M6 不建 create；可按
     counterparty_code / ref_order_id 精确过滤。
     """
     from .m0_facts import list_entities

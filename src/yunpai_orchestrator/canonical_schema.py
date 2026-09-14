@@ -98,7 +98,7 @@ CANONICAL_SCHEMA: dict[str, dict[str, Any]] = {
     },
     "delivery_note": {
         # 送货单（对账依据），F-008。身份键 note_no（老仓 facade 口径）。
-        # 按 D4/D-020，canonical 为唯一主，M6 **只读**（写入在 M0 侧，M6 不建 create）。
+        # 按 D4／老仓 D-020（v2 记 D-009），canonical 为唯一主，M6 **只读**（写入在 M0 侧，M6 不建 create）。
         # signed_* / warehouse_confirmed_* / qc_status 为签收面字段（接口预留）。
         "required": ("note_no", "counterparty_code", "note_date"),
         "fields": ("note_no", "note_date", "counterparty_code", "direction", "amount",

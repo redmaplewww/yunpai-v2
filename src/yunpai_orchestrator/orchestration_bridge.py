@@ -1908,7 +1908,7 @@ def bridge_payload(state: RunState, tool: str) -> dict[str, Any]:
         expenses = request.get("expenses")
         basis_source = "explicit"
         if not isinstance(expenses, list) or not expenses:
-            # 费用事实的唯一主 = M0 canonical（D4/D-020）；装配层读、并在此拆信封
+            # 费用事实的唯一主 = M0 canonical（D4／老仓 D-020 = v2 D-009）；装配层读、并在此拆信封
             expenses = _flatten_entities(_read_m0_entities(state, "expense"))
             basis_source = "canonical" if expenses else "missing"
         basis_rows = request.get("basis_rows")

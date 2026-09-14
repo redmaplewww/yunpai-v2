@@ -953,7 +953,7 @@ async def m6_get_delivery_note(payload: dict[str, Any],
                                ctx: dict[str, Any]) -> dict[str, Any]:
     """`get_delivery_note`：按单号读回 canonical 送货单（**M6 只读，不建 create**）。
 
-    读的是 M0 canonical（唯一主，D4/D-020）；签收面字段（`signed_by`/
+    读的是 M0 canonical（唯一主，D4／老仓 D-020 = v2 D-009）；签收面字段（`signed_by`/
     `warehouse_confirmed_by`/`qc_status`）原样照抄回读、不加工。事实由装配层读取
     （`delivery_note_bodies`，**已拆信封**），本层只做匹配与回读。
     """
