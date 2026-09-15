@@ -1,17 +1,18 @@
 # M6 独立验证方案（TEST）
 
-- 用途：**给测试执行方**。这不是"再跑一遍 pytest"——重复执行本套用例的增量价值接近零（代码与断言同源、本地已跑过）。本方案给出三件**本地跑不出来**的动作。
+- 用途：**给测试执行方**。这不是"再跑一遍 pytest"——重复执行本套用例的增量价值接近零（代码与断言同源、本地已跑过）。本方案给出三类**独立验证动作**，并补充一套真实 API 业务链路。
 - 为什么需要：`tests/fixtures/m6/fixture_pack.json` 的 `expected` 与被测代码**出自同一作者**。若公式系统性写错，两边会一起错，测试照样全绿。**"全绿"证明的是自洽，不是正确。**
 - 基线：分支 `feat/m6-finance-20260913`，HEAD 以交付包内的 `COMMIT_SHA.txt` 或 `git rev-parse HEAD` 为准。
-- 配套：模型与契约见 `SPEC-M6-runtime-io-and-gates-20260915.md`；用例与判据见 `TEST-M6-fixture-pack-20260915.md`。
+- 配套：运行模型与契约见 `SPEC-M6-runtime-io-and-gates-20260915.md`；夹具用例与判据见 `TEST-M6-fixture-pack-20260915.md`；本文件另补充无前端条件下的 API 链路验收。
 
-## 三件事的分工
+## 三类独立动作与 API 链路的分工
 
 | # | 动作 | 能抓到什么 | 抓不到什么 |
 |---|---|---|---|
 | 一 | **独立复算**（换输入手算） | 实现与公式不符（漏乘损耗、报废没扣、时分秒单位错、分母错） | 公式本身与工厂财务口径不符（见 §1.2 末） |
 | 二 | **人工三条**（来源标识 / 不伪装 / 数值未漂移） | 假数据冒充真实数据、夹具预期值漂移 | 公式正确性 |
 | 三 | **异机冒烟** | 机器相关假设（编码、临时目录、依赖版本、Python 小版本） | 任何业务口径问题 |
+| 四 | **API 业务链路**（创建 / 门禁 / 审批 / 落库 / 回读） | 入口装配、持久化、门禁决策和公共状态输出 | 真实上游 canonical 数据是否齐备、前端页面展示 |
 
 ---
 
@@ -342,6 +343,110 @@ python -m pytest tests/ -q -k m6 --basetemp=/tmp/m6-run1       # Git Bash / macO
 
 ---
 
+## 三点五、同事要做的业务链路验收（本轮核心）
+
+前面三项分别验证公式独立性、数据合规性和异机可运行性；它们仍然不能证明“一个业务请求从入口走到正式账目”。因此同事还要用接口客户端独立完成以下链路。这里的“独立”是：先看公式和输入，自己写预期；再调用 API；最后用新的查询请求回读结果。不能只把开发者已经写好的 pytest 再执行一遍，也不能直接改 SQLite 后声称链路通过。
+
+### 3.5.1 工具和职责
+
+| 工具 | 用途 | 使用边界 |
+|---|---|---|
+| PowerShell / Git Bash | 启动服务、保存命令输出、记录版本 | 只操作测试目录和临时库 |
+| Python 虚拟环境 | 固定依赖和 Python 版本 | 测试机使用独立 `.venv`，不复用开发机环境 |
+| `uvicorn` | 启动真实 FastAPI `create_app` | 绑定 `127.0.0.1`，使用临时运行目录 |
+| curl、PowerShell `Invoke-RestMethod` 或接口客户端 | 发送 `POST /runs`、`GET /runs/{id}`、`POST /resume` | 每个场景使用新的 run；保留请求与响应原文 |
+| `git` | 锁定被测代码版本 | 记录分支、HEAD、工作树状态 |
+| 浏览器 | 本轮不要求 | 没有前端时不能用浏览器结果代替后端链路证据 |
+
+服务可在仓库根目录启动：
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m uvicorn yunpai_orchestrator.api.app:create_app --factory --host 127.0.0.1 --port 18060
+```
+
+依赖安装和版本记录：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e ".[test]"
+git rev-parse HEAD
+git status --short
+python --version
+```
+
+### 3.5.2 所有场景的共同输入
+
+每个场景都使用独立的 `m6_db_path`，不能指向 `runtime/yunpai-m6.sqlite`。成本主链路可以使用下面的输入；测试人员应先在纸上或表格中写出 810.0，再发送请求：
+
+```json
+{
+  "message": "按财务口径确认成本",
+  "tools": ["save_costing_snapshot", "confirm_costing_snapshot"],
+  "m6_db_path": "<测试目录>/m6-cost-001.sqlite",
+  "period": "2026-09",
+  "order_id": "SO-IV-001",
+  "product_code": "P1",
+  "batch_no": "B1",
+  "quantity": 10,
+  "bom_lines": [{"material_code": "M1", "qty_per": 2, "unit_price": 5.0, "loss_rate": 0.1}],
+  "routing_steps": [{"operation_id": "OP10", "standard_minutes": 60}],
+  "inventory": [{"material_code": "M1", "available_qty": 100, "stock_class": "raw"}],
+  "hour_rate": 50,
+  "overhead_rate": 20
+}
+```
+
+独立复算：材料 `5×2×1.1=11`，人工 `1×50=50`，制费 `1×20=20`，单台成本 `81`，整单成本 `81×10=810`。这一步必须在看系统响应前完成，避免把错误输出反推成“预期”。
+
+### 3.5.3 必测 API 场景
+
+| 编号 | 操作步骤 | 为什么测 | 通过判据 |
+|---|---|---|---|
+| API-01 创建并挂起 | 发送上面的 `POST /runs` | 验证真实 HTTP 入口、请求体装配、M6 路径透传和 finance 门 | HTTP 200；`status=waiting_human`；`pending_gate.type=finance`；`tool=confirm_costing_snapshot`；角色含 `finance-officer` |
+| API-02 审批可见 | 查看 API-01 响应中的 `pending_gate` | 防止出现“有门但审批人看不到金额”的盲批 | `pending_gate.review` 包含订单、账期、数量、`total_cost=810`、`cost_incomplete=false` |
+| API-03 批准生效 | 用 API-01 的 `run_id` 发送 `POST /runs/{id}/resume`，body 为 `{"decision":"approve","actor":"fin-api","roles":["finance-officer"]}`；然后重新 `GET /runs/{id}` | 验证门决策确实驱动 commit，而不是接口返回成功就算完成 | HTTP 200；confirm 输出 `status=confirmed`；`committed_by=finance_gate`；`approvals` 有 approve；M6 库回读状态为 confirmed |
+| API-04 拒绝不生效 | 新建另一 run，执行相同创建后 resume `{"decision":"reject","roles":["finance-officer"]}`；再查询 | 验证拒绝路径没有把 trial 偷换成正式账 | HTTP 200；审批记录为 reject；快照仍是 trial；不存在 confirmed 生效行 |
+| API-05 越权 | 新建另一 run，resume `roles=["operator"]` | 验证财务门不能被普通操作员绕过 | 响应后仍 `waiting_human`；门的 `allowed_roles` 未改变；快照仍为 trial |
+| API-06 请求头角色 | 新建另一 run，不在 body 放 roles，使用 `X-Actor-User` 与 `X-Actor-Roles: finance-officer` | 验证真实前端常用的请求头路径 | 能正常批准并完成；审批 actor 来自请求头 |
+| API-07 状态与脱敏 | 对挂起 run 执行 `GET /runs/{id}`，检查完整 JSON | 验证 API 输出是公共状态而不是内部 interrupt 对象 | 包含 `pending_gate`、`outputs`、`approvals`、`status`；不含 `__interrupt__`；若有长 `content_b64`，值为 `[omitted]` |
+
+每个 API 场景必须使用新的 run 和新的临时数据库。一个场景失败后不能继续复用同一个 run，否则前一场景的状态会污染后一场景。API 的 `pending_gate` 直接承载门对象；Graph 内部的 `__interrupt__` envelope 不应要求测试人员从 HTTP 响应中寻找。
+
+### 3.5.4 API 之外的业务链路扩展
+
+成本确认通过后，再按同样的 propose → approve/reject → GET 回读方式扩展：
+
+1. **月结**：先准备一笔 confirmed 和一笔 trial，检查 trial 不进汇总；批准月结后检查冻结的是审阅时的合计；再次写入该期间应被拒绝。
+2. **报价单**：生成报价预览后保存草稿，检查金额和加价率；批准后单据才 confirmed；拒绝后草稿可追溯但不能成为正式单据。
+3. **对账单**：分别测有明细和缺明细；缺方向或金额必须明确失败，不能生成金额为零的“成功”对账单。
+4. **资产台账**：确认 v1 后提交 v2 草稿；批准前生效原值仍为 v1；拒绝后仍为 v1；批准后才切换到 v2。
+5. **缺事实场景**：去掉数量、材料价、工资单价或对账金额，确认输出含 `missing` / `cost_incomplete`，而不是填零放行。
+6. **恢复与幂等**：门挂起后停止并重新启动服务，再用原 `run_id` 查询和审批；重复 approve 或重复单号不能重复生效。
+
+这些扩展目前不是“再跑一遍现有 M6 单测”，而是同事根据测试包独立准备请求并核对前后状态。若某个入口当前没有真实上游 API，只能把它记录为“当前版本未覆盖”，不能用直接写库代替。
+
+### 3.5.5 证据怎么留
+
+每个场景至少留下以下内容，并在文件名中带场景编号和时间：
+
+- `git rev-parse HEAD`、Python 版本、操作系统和依赖安装尾部输出；
+- 原始请求 JSON（脱敏后）和原始响应 JSON；
+- approve/reject 前后的 `GET /runs/{id}`；
+- 独立手算表，列出公式、输入、预期、系统实际值和差异；
+- M6 只读回读结果（快照状态、汇总、审批记录）；
+- 失败时的完整错误、复现步骤、是否换新 run/新临时库后仍复现。
+
+报告结论必须分开写：
+
+- “独立公式验证通过”只表示实现符合写下来的公式；
+- “API 链路通过”表示入口到状态回读的一条场景通过；
+- “异机冒烟通过”只表示另一台机器能运行；
+- 三者都通过，也不能声称真实 canonical 数据和 M1→M5→M6 生产链路已验收。
+
+---
+
 ## 四、回执模板（按这个回报）
 
 ### 4.1 逐项结果
@@ -353,6 +458,7 @@ python -m pytest tests/ -q -k m6 --basetemp=/tmp/m6-run1       # Git Bash / macO
 | 二 T-02 不伪装 | 通过 / 失败 | grep 输出 | |
 | 二 T-03 数值未漂移 | 通过 / 失败 | 对照表 | |
 | 三 异机冒烟 | 通过 / 失败 | 四条命令输出 | 标注 OS 与 Python 版本 |
+| 四 API 链路 API-01～API-07 | 通过 / 失败 / 未覆盖 | 请求、响应、前后 GET、回读结果 | 每个场景单独写 run_id 和 m6_db_path |
 
 ### 4.2 结论与口径问题
 
@@ -365,6 +471,7 @@ python -m pytest tests/ -q -k m6 --basetemp=/tmp/m6-run1       # Git Bash / macO
 - 本轮验证的范围：**假数据下的确定性与公式实现**。
 - 本轮**未**验证：真实 canonical 数据齐备性、M1→M5→M6 全链路、生产环境验收、以及 §1.2 的 5 条业务口径（需财务确认）。
 - 本轮的"异机跑通"属**环境冒烟**，不得记为"独立测试通过"或"验收通过"。
+- 本轮的“API 链路通过”仅覆盖已实际执行并留证的场景；没有前端不影响后端链路测试，但不能据此声称前端展示已验收。
 
 ---
 
