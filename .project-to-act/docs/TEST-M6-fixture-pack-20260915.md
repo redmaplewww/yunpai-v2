@@ -163,6 +163,27 @@ python scripts/check_contracts.py       # 契约加载/去重/对齐
 - 出现 `success=true` 携带错误、或以 `0`/默认值冒充缺失事实 → 整轮不通过（红线，不按单条计）。
 - 用例库路径指向真库 → 整轮不通过（污染生产数据的风险）。
 
+### 环境级偶发失败：报缺陷前先复跑
+
+**现象**：Windows 上偶发一条失败（或仅作为收尾噪音出现），报错形如
+
+```
+PermissionError: [WinError 5] 拒绝访问。:
+'C:\Users\<用户名>\AppData\Local\Temp\pytest-of-<用户名>\pytest-current'
+```
+
+**性质**：这是 pytest 清理临时目录（`tmp_path` 的编号目录）时与 Windows 文件句柄/杀毒/索引服务竞争导致的环境问题，**与本轮代码无关**。实测：同一目录复跑即恢复 `179 passed / 1 skipped`。
+
+**处置**：报缺陷前**先原样复跑一次**；仍失败再换一个干净的临时目录：
+
+```bash
+python -m pytest tests/ -q -k m6 --basetemp=%TEMP%\m6-run1     # Windows cmd
+python -m pytest tests/ -q -k m6 --basetemp=/tmp/m6-run1       # Git Bash / macOS / Linux
+```
+
+只有**在干净 basetemp 下仍稳定复现**的失败才计为缺陷。请把两次输出都留下作为证据（说明是环境偶发而非缺陷）。
+
+
 ### 通过之后的下一步
 
 本轮通过仅证明 **M6 财务链在假数据下自洽**，**不等于**生产验收。接真实数据库是**独立轮次**，切换点在装配层 `_assemble_costing_facts`（`orchestration_bridge.py:1180`），届时须重新验收数据齐备性，并处理两个已记账口径缺口：
