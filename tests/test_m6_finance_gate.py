@@ -139,9 +139,12 @@ def test_save_trial_then_confirm_through_finance_gate(m6_db):
     assert any(e.get("event") == "m6.costing_confirmed" for e in resumed.get("trace") or [])
     assert [row["action"] for row in resumed.get("review_applied") or []] == ["commit"]
     assert resumed["review_applied"][0]["tool"] == "confirm_costing_snapshot"
-    assert resumed["outputs"]["confirm_costing_snapshot"]["data"]["pending_confirmation"] is False
+    confirmed_env = resumed["outputs"]["confirm_costing_snapshot"]
+    assert confirmed_env["data"]["pending_confirmation"] is False
+    # 提交钩子更新后的信封两条镜像必须同时刷新，避免 result 保留旧 trial 状态。
+    assert confirmed_env["result"] == confirmed_env["data"]
     assert any("trial→confirmed" in str(item.get("detail", ""))
-               for item in resumed["outputs"]["confirm_costing_snapshot"]["evidence"])
+               for item in confirmed_env["evidence"])
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +225,7 @@ def test_close_month_freezes_reviewed_totals(m6_db):
     # 冻结的就是被审阅的那组数（不随 commit 时重算漂移）
     assert summary["totals"]["total_cost"] == reviewed["total_cost"] == 810.0
     assert summary["snapshot_count"] == reviewed["snapshot_count"] == 1
+    assert frozen["outputs"]["close_month_costing"]["result"] == frozen["outputs"]["close_month_costing"]["data"]
     assert any(e.get("event") == "m6.month_closed" for e in frozen.get("trace") or [])
 
 

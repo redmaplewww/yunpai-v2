@@ -213,6 +213,7 @@ def test_asset_upsert_propose_then_finance_commit(tmp_path, monkeypatch):
     assert effective["confirmed_by"] == "fin-01"
     assert effective["useful_life_months"] == 24
     assert resumed["outputs"]["upsert_asset_ledger"]["data"]["pending_asset_commit"] is False
+    assert resumed["outputs"]["upsert_asset_ledger"]["result"] == resumed["outputs"]["upsert_asset_ledger"]["data"]
     assert any(e.get("event") == "m6.asset_confirmed" for e in resumed.get("trace") or [])
     assert [row["action"] for row in resumed.get("review_applied") or []] == ["commit"]
 

@@ -83,15 +83,19 @@ def _evidence(source_ref: str, detail: str) -> dict[str, Any]:
 
 def _ok(data: dict[str, Any], ctx: dict[str, Any] | None, suffix: str,
         evidence: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    return {"success": True, "data": data, "errors": [],
+    # Keep the v2 ``data/errors`` envelope while exposing the frozen Tool
+    # contract names required by the current FactoryBrain file standard.
+    return {"success": True, "result": data, "data": data, "error": None,
+            "business_status": "completed", "errors": [],
             "trace_id": _trace(ctx, suffix), "evidence": evidence or []}
 
 
 def _fail(code: str, message: str, ctx: dict[str, Any] | None, suffix: str,
           data: dict[str, Any] | None = None) -> dict[str, Any]:
     """硬失败信封（``success=False``）——不得当成功吞掉（reviewer 侧规则同步 fail）。"""
-    return {"success": False, "code": code,
-            "errors": [{"code": code, "message": message, "details": []}],
+    error = {"code": code, "message": message, "details": []}
+    return {"success": False, "code": code, "result": data or {},
+            "errors": [error], "error": error, "business_status": "failed",
             "data": data or {}, "trace_id": _trace(ctx, suffix), "evidence": []}
 
 
@@ -285,7 +289,12 @@ async def m6_save_costing_snapshot(payload: dict[str, Any],
     assumptions = breakdown["assumptions"]
 
     quantity = _num_optional(payload.get("quantity"))
-    total_cost = round(unit_cost * (quantity or 0.0), 4)
+    if quantity is None:
+        missing_inputs = [*missing_inputs, {"reason": "missing_quantity"}]
+    cost_incomplete = bool(cost_incomplete or quantity is None)
+    # A missing production quantity is different from a zero quantity.  Keep
+    # the unit-cost preview, but never persist a fabricated zero total.
+    total_cost = round(unit_cost * quantity, 4) if quantity is not None else None
 
     resolved_evidence = {
         "price_source": breakdown["price_source"],
@@ -882,8 +891,23 @@ def _statement_transactions(payload: dict[str, Any]) -> dict[str, Any]:
     """
     explicit = payload.get("transactions")
     if isinstance(explicit, list) and explicit:
-        return {"transactions": [tx for tx in explicit if isinstance(tx, dict)],
-                "source": "explicit", "missing": []}
+        transactions: list[dict[str, Any]] = []
+        missing: list[dict[str, Any]] = []
+        for index, tx in enumerate(explicit, start=1):
+            if not isinstance(tx, dict):
+                missing.append({"line": index, "reason": "invalid_row"})
+                continue
+            direction = str(tx.get("direction") or "").strip().lower()
+            amount = _num_optional(tx.get("amount"))
+            if direction not in {"in", "out", "debit", "credit", "increase", "decrease"}:
+                missing.append({"line": index, "reason": "missing_or_invalid_direction"})
+                continue
+            if amount is None:
+                missing.append({"line": index, "reason": "missing_transaction_amount",
+                                "ref": tx.get("ref")})
+                continue
+            transactions.append({**tx, "direction": direction, "amount": amount})
+        return {"transactions": transactions, "source": "explicit", "missing": missing}
     statement_type = str(payload.get("statement_type") or "customer")
     transactions: list[dict[str, Any]] = []
     missing: list[dict[str, Any]] = []
@@ -935,7 +959,11 @@ async def m6_generate_statement(payload: dict[str, Any],
                      "m6-generate-statement")
     statement_type = str(payload.get("statement_type") or "customer")
     detail = _statement_transactions(payload)
-    if not detail["transactions"]:
+    # Explicit transactions are caller-provided accounting facts: any
+    # malformed row makes the preview unsafe. Generated basis rows may still
+    # contain non-usable source rows; those are reported in ``missing`` while
+    # valid rows are retained (the established B3 behavior).
+    if (detail["source"] == "explicit" and detail["missing"]) or not detail["transactions"]:
         return _fail("INVALID_INPUT", "对账依据不足，无法生成对账单（不编造明细）", ctx,
                      "m6-generate-statement",
                      data={"statement_type": statement_type, "counterparty_code": counterparty,
@@ -987,10 +1015,11 @@ async def m6_save_statement(payload: dict[str, Any],
     明细来源见 `_statement_transactions`（B3 起可依据送货单/入库事实自动生成）。
     """
     totals = _statement_totals(payload)
-    if totals["source"] == "missing":
+    if totals["source"] == "missing" or (
+            totals.get("missing") and totals["source"] == "explicit"):
         return _fail("INVALID_INPUT",
-                     "对账明细缺失：请给 transactions（含 direction/amount）或显式 lines",
-                     ctx, "m6-statement")
+                     "对账明细缺失或金额无效：请给 transactions（含 direction/amount）或显式 lines",
+                     ctx, "m6-statement", data={"missing": totals.get("missing") or []})
     statement_type = str(payload.get("statement_type") or "")
     direction = str(payload.get("direction") or
                     ("in" if statement_type == "supplier" else "out"))

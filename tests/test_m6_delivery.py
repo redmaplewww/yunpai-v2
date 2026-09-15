@@ -261,6 +261,24 @@ def test_save_statement_still_blocks_when_no_basis_and_no_detail(tmp_path, monke
         "对账明细（transactions/lines 或可用的送货单/入库依据）"]
 
 
+def test_save_statement_rejects_explicit_transaction_without_amount(tmp_path):
+    """显式对账明细缺金额不得按 0 生成草稿。"""
+    from yunpai_orchestrator.m6_tools import m6_save_statement
+
+    payload = {
+        "doc_no": "ST-MISSING-AMOUNT",
+        "counterparty_code": "CUST-01",
+        "transactions": [{"direction": "in"}],
+    }
+    result = asyncio.run(m6_save_statement(payload, {
+        "m6_db_path": str(tmp_path / "m6.sqlite"), "tenant_id": "default",
+        "task_id": "missing-amount",
+    }))
+    assert result["success"] is False
+    assert result["code"] == "INVALID_INPUT"
+    assert result["data"]["missing"][0]["reason"] == "missing_transaction_amount"
+
+
 # ---------------------------------------------------------------------------
 # 契约 ↔ 规则
 # ---------------------------------------------------------------------------

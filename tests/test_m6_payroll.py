@@ -99,13 +99,15 @@ async def test_piece_pay_marks_missing_rate_instead_of_counting_it_as_zero():
 
 
 async def test_piece_pay_without_rates_returns_nothing_but_missing():
-    """一条单价都没有时：不编造、不给 0 工资，全部进 missing。"""
+    """单价事实集缺失时：不编造、不给 0 工资，显式标记事实缺失。"""
     registry = build_default_registry()
     result = await registry.call("calculate_piece_pay", {"report_events": EVENTS}, CTX)
     data = result["data"]
     assert data["totals"] == []
     assert data["piece_rate_source"] == "missing"
-    assert data["cost_incomplete"] is True
+    assert data["cost_incomplete"] is False
+    assert data["facts_present"] is False
+    assert data["missing"] == [{"reason": "missing_salary_facts"}]
 
 
 async def test_canonical_daily_report_is_not_substituted_as_report_events(monkeypatch):

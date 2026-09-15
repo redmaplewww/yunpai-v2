@@ -1,0 +1,74 @@
+{
+  "schema_version": "m6.fixture.v1",
+  "currency": "CNY",
+  "tax_included": false,
+  "fixtures": {
+    "FX-COST-001": {
+      "source_ref": "fixture:FX-COST-001",
+      "evidence": {"fixture_id": "FX-COST-001", "observed_at": "2026-09-15T10:00:00+08:00"},
+      "input": {
+        "period": "2026-09", "order_id": "SO-FX-001", "product_code": "P1", "batch_no": "B1", "quantity": 10,
+        "bom_lines": [{"material_code": "M1", "qty_per": 2, "unit_price": 5.0, "loss_rate": 0.1, "source_ref": "fixture:FX-COST-001:bom:M1"}],
+        "routing_steps": [{"operation_id": "OP10", "standard_minutes": 60, "source_ref": "fixture:FX-COST-001:route:OP10"}],
+        "inventory": [{"material_code": "M1", "available_qty": 100, "stock_class": "raw", "source_ref": "fixture:FX-COST-001:stock:M1"}],
+        "hour_rate": 50, "overhead_rate": 20
+      },
+      "expected": {"unit_cost": 81.0, "total_cost": 810.0, "cost_incomplete": false, "basis": "stock"}
+    },
+    "FX-COST-002": {
+      "source_ref": "fixture:FX-COST-002",
+      "evidence": {"fixture_id": "FX-COST-002", "observed_at": "2026-09-15T10:01:00+08:00"},
+      "input": {
+        "period": "2026-09", "order_id": "SO-FX-002", "product_code": "P1", "batch_no": "B1",
+        "bom_lines": [{"material_code": "M1", "qty_per": 2, "unit_price": 5.0, "loss_rate": 0.1, "source_ref": "fixture:FX-COST-002:bom:M1"}],
+        "routing_steps": [{"operation_id": "OP10", "standard_minutes": 60, "source_ref": "fixture:FX-COST-002:route:OP10"}],
+        "inventory": [{"material_code": "M1", "available_qty": 100, "stock_class": "raw", "source_ref": "fixture:FX-COST-002:stock:M1"}],
+        "hour_rate": 50, "overhead_rate": 20
+      },
+      "expected": {"unit_cost": 81.0, "total_cost": null, "cost_incomplete": true, "missing_reason": "missing_quantity"}
+    },
+    "FX-PAY-001": {
+      "source_ref": "fixture:FX-PAY-001",
+      "evidence": {"fixture_id": "FX-PAY-001", "observed_at": "2026-09-15T10:02:00+08:00"},
+      "input": {
+        "report_events": [
+          {"worker_id": "W001", "station_code": "ST-01", "product_code": "P1", "quantity_report": 100, "scrap": 5, "report_date": "2026-09-10", "source_ref": "fixture:FX-PAY-001:event:1"},
+          {"worker_id": "W002", "station_code": "ST-01", "product_code": "P1", "quantity_report": 80, "scrap": 0, "report_date": "2026-09-10", "source_ref": "fixture:FX-PAY-001:event:2"},
+          {"worker_id": "W003", "station_code": "ST-02", "product_code": "P1", "quantity_report": 10, "scrap": 0, "report_date": "2026-09-10", "source_ref": "fixture:FX-PAY-001:event:3"}
+        ],
+        "piece_rates": [{"station_code": "ST-01", "product_code": "P1", "unit_rate": 2.5, "effective_from": "2026-09-01", "source_ref": "fixture:FX-PAY-001:rate:1"}]
+      },
+      "expected": {"W001": 237.5, "W002": 200.0, "missing_reason": "missing_piece_rate", "cost_incomplete": true}
+    },
+    "FX-PAY-002": {
+      "source_ref": "fixture:FX-PAY-002",
+      "evidence": {"fixture_id": "FX-PAY-002", "observed_at": "2026-09-15T10:03:00+08:00"},
+      "input": {"salary_standards": {"W001": 6000, "W002": 5000}, "attendance": {"W001": {"overtime_hours": 10, "absence_hours": 0}, "W002": {"overtime_hours": 0, "absence_hours": 8}}, "piece_pay": {"W001": 237.5}},
+      "expected": {"W001_gross_pay": 6754.7414, "W002_gross_pay": 4770.1149, "facts_present": true, "cost_incomplete": false}
+    },
+    "FX-EXP-001": {
+      "source_ref": "fixture:FX-EXP-001",
+      "evidence": {"fixture_id": "FX-EXP-001", "observed_at": "2026-09-15T10:04:00+08:00"},
+      "input": {"expenses": [{"category": "electricity", "amount": 3000, "allocation_basis": "quantity", "source_ref": "fixture:FX-EXP-001:expense:1"}], "basis_rows": [{"product_code": "P1", "quantity": 60, "source_ref": "fixture:FX-EXP-001:basis:P1"}, {"product_code": "P2", "quantity": 40, "source_ref": "fixture:FX-EXP-001:basis:P2"}], "allocation_basis": "quantity"},
+      "expected": {"P1": 1800.0, "P2": 1200.0, "total_allocated": 3000.0, "cost_incomplete": false}
+    },
+    "FX-ASSET-001": {
+      "source_ref": "fixture:FX-ASSET-001",
+      "evidence": {"fixture_id": "FX-ASSET-001", "observed_at": "2026-09-15T10:05:00+08:00"},
+      "input": {"asset_usage": [{"asset_code": "MOLD-1", "product_code": "P1", "quantity": 60, "source_ref": "fixture:FX-ASSET-001:usage:P1"}, {"asset_code": "MOLD-1", "product_code": "P2", "quantity": 40, "source_ref": "fixture:FX-ASSET-001:usage:P2"}], "asset_cost": {"MOLD-1": 1000.0}, "allocation_basis": "quantity"},
+      "expected": {"P1": 600.0, "P2": 400.0, "cost_incomplete": false}
+    },
+    "FX-STMT-001": {
+      "source_ref": "fixture:FX-STMT-001",
+      "evidence": {"fixture_id": "FX-STMT-001", "observed_at": "2026-09-15T10:06:00+08:00"},
+      "input": {"opening_balance": 1000, "transactions": [{"direction": "in", "amount": 500, "ref": "fixture:FX-STMT-001:in", "source_ref": "fixture:FX-STMT-001:tx:1"}, {"direction": "out", "amount": 200, "ref": "fixture:FX-STMT-001:out", "source_ref": "fixture:FX-STMT-001:tx:2"}]},
+      "expected": {"inflow": 500.0, "outflow": 200.0, "closing_balance": 1300.0}
+    },
+    "FX-INV-001": {
+      "source_ref": "fixture:FX-INV-001",
+      "evidence": {"fixture_id": "FX-INV-001", "observed_at": "2026-09-15T10:07:00+08:00"},
+      "input": {"inventory": [{"material_code": "M1", "available_qty": 100, "stock_class": "raw", "source_ref": "fixture:FX-INV-001:stock:M1"}, {"material_code": "M2", "available_qty": 50, "stock_class": "wip", "source_ref": "fixture:FX-INV-001:stock:M2"}, {"material_code": "M3", "available_qty": 10, "stock_class": "mystery", "source_ref": "fixture:FX-INV-001:stock:M3"}], "unit_costs": {"M1": 5.0, "M2": 8.0}},
+      "expected": {"raw_qty": 100.0, "raw_amount": 500.0, "wip_qty": 50.0, "wip_amount": 400.0, "unknown_qty": 10.0, "cost_incomplete": true}
+    }
+  }
+}

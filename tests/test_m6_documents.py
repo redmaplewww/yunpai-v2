@@ -298,6 +298,7 @@ def test_quotation_propose_then_finance_gate_commit(tmp_path, monkeypatch):
     assert doc["status"] == STATUS_CONFIRMED              # commit 钩子翻正
     assert doc["confirmed_by"] == "fin-01"
     assert resumed["outputs"]["save_quotation"]["data"]["pending_document_commit"] is False
+    assert resumed["outputs"]["save_quotation"]["result"] == resumed["outputs"]["save_quotation"]["data"]
     assert any(e.get("event") == "m6.document_confirmed" for e in resumed.get("trace") or [])
     assert [row["action"] for row in resumed.get("review_applied") or []] == ["commit"]
 

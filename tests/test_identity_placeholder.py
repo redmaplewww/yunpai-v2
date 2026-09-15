@@ -1,7 +1,7 @@
 """identity 模块回归测试（2026-09-07 规范落地版，原占位 7 项显式演进）。
 
 行为演进均对应《组织架构与权限说明交接包》条款：
-- 接缝 1：PERMISSION_CATALOG v1 = 冻结 11 + worker.view/report.view（13 项），
+- 接缝 1：PERMISSION_CATALOG v1 = 冻结 11 + worker.view/report.view/finance.approve/cost.view（15 项），
   查看类权限附数据范围 self|dept|tenant；
 - 接缝 2：种子角色 = 流程五角色 + 产线四角色（9 个）；
 - 接缝 3：派生规则正式版——部门取 shift 字段、拆分多部门、剥「部」归一化、
@@ -39,13 +39,13 @@ def store(tmp_path):
 def test_permission_catalog_matches_gate_semantics():
     """接缝 1：v1 清单 = 冻结 11 + worker.view/report.view；gate 映射一致。"""
     codes = {p["code"] for p in PERMISSION_CATALOG}
-    assert codes == _FROZEN_11 | {"worker.view", "report.view"}
+    assert codes == _FROZEN_11 | {"worker.view", "report.view", "finance.approve", "cost.view"}
     gates = {p["gate"] for p in PERMISSION_CATALOG}
-    assert {"candidate", "review", "engineering", "apply", "sensitive_data", "procurement"} <= gates
+    assert {"candidate", "review", "engineering", "apply", "sensitive_data", "procurement", "finance"} <= gates
     assert all(p["label"] for p in PERMISSION_CATALOG)
     # 查看类权限附数据范围，其余不带
     scoped = {p["code"] for p in PERMISSION_CATALOG if "scopes" in p}
-    assert scoped == {"order.view", "report.view", "worker.view"}
+    assert scoped == {"order.view", "report.view", "worker.view", "cost.view"}
     # GATE_PERMISSION 是 catalog gate 列的一致映射
     catalog_gate_by_code = {}
     for p in PERMISSION_CATALOG:
@@ -55,21 +55,24 @@ def test_permission_catalog_matches_gate_semantics():
         assert code in codes, f"gate {gate} 映射了未登记权限 {code}"
         assert catalog_gate_by_code.get(code) == gate
     assert permission_for_gate("engineering") == "engineering.approve"
+    assert permission_for_gate("finance") == "finance.approve"
     assert permission_for_gate("authorization") is None
 
 
-def test_default_role_seeds_nine_roles():
+def test_default_role_seeds_ten_roles():
     """接缝 2：流程五角色 + 产线四角色；厂长=事实 admin 不含 identity.admin；
     工人是 self 范围 order.view。"""
     by_code = {role["role_code"]: role for role in DEFAULT_ROLE_SEEDS}
     assert set(by_code) == {
         "org-admin", "data-steward", "engineer", "planner", "release-manager",
-        "factory-director", "quality-assurance", "team-leader", "worker",
+        "factory-director", "quality-assurance", "team-leader", "worker", "finance-officer",
     }
     assert "identity.admin" not in by_code["factory-director"]["permissions"]
     assert "identity.admin" in by_code["org-admin"]["permissions"]
     assert "worker.view" in by_code["org-admin"]["permissions"]
     assert by_code["worker"]["permissions"] == ["order.view@self"]
+    assert set(by_code["finance-officer"]["permissions"]) == {
+        "order.view", "cost.view", "finance.approve"}
     assert set(by_code["quality-assurance"]["permissions"]) == {
         "order.view", "order.review", "report.view"}
 
@@ -150,6 +153,17 @@ def test_role_and_binding_resolve_roundtrip(store):
     # skill 岗位属性（接缝 3：作为绑定属性留存）
     store.bind_user(tenant_id="default", user_id="u-skill", role_codes=["worker"], skill="仓管")
     assert store.resolve(tenant_id="default", user_id="u-skill")["skill"] == "仓管"
+
+
+def test_finance_officer_seed_resolves_finance_permissions(store):
+    """财务角色已进入租户种子并能解析审批/成本查看权限。"""
+    store.ensure_tenant_roles("finance-tenant")
+    store.bind_user(tenant_id="finance-tenant", user_id="u-finance",
+                    role_codes=["finance-officer"])
+    resolved = store.resolve(tenant_id="finance-tenant", user_id="u-finance")
+    assert resolved["roles"] == ["finance-officer"]
+    assert {"finance.approve", "cost.view"} <= set(resolved["permissions"])
+    assert permission_for_gate("finance") == "finance.approve"
 
 
 def test_authorize_formal_semantics(store, monkeypatch):

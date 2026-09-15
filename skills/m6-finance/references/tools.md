@@ -103,7 +103,7 @@ operation 白名单见 `m6_tooling.py`；调用方式见同级 `SKILL.md`。
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---:|---|
 | `report_events` | `array` | 否 | 报工事实（**v2 无 canonical 来源，必须显式给**）：[{worker_id, station_code, product_code, quantity_report, scrap?, report_date}]。 |
-| `piece_rates` | `array` | 否 | 计件单价（**无 canonical 来源，必须显式给**）：[{station_code, product_code, unit_rate, effective_from?, effective_to?}]。不给 → 每条报工进 missing_piece_rate。 |
+| `piece_rates` | `array` | 否 | 计件单价（**无 canonical 来源，必须显式给**）：[{station_code, product_code, unit_rate, effective_from?, effective_to?}]。不给 → `facts_present=false`、`missing_salary_facts`；两类事实均在位但逐行无匹配 → `cost_incomplete=true`、`missing_piece_rate`。 |
 
 ### `calculate_monthly_pay`
 
@@ -117,7 +117,7 @@ operation 白名单见 `m6_tooling.py`；调用方式见同级 `SKILL.md`。
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---:|---|
-| `salary_standards` | `object` | 否 | 工人→月薪标准（事实值）：{worker_id: 月薪}。 |
+| `salary_standards` | `object` | 否 | 工人→月薪标准（事实值）：{worker_id: 月薪}。为空 → `facts_present=false`、`missing_salary_facts`；非空但逐行缺月薪仍进入 `incomplete`。 |
 | `attendance` | `object` | 否 | 工人→考勤（事实值）：{worker_id: {overtime_hours, absence_hours}}。 |
 | `piece_pay` | `object` | 否 | 工人→计件工资合计（事实值）：{worker_id: 金额}；通常取 calculate_piece_pay 的 totals。 |
 | `overtime_multiplier` | `number` | 否 | 加班倍数（口径值；默认 1.5，未给出即标 assumed=true 并附待确认清单）。 |

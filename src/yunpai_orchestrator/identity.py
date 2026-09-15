@@ -4,7 +4,7 @@
 ``SPEC_INTAKE_POINTS`` 五接缝填充正式实现，取代占位行为：
 
 - 接缝 1 ``PERMISSION_CATALOG``：v1 冻结既有 11 项（code/gate 不变）+ 新增
-  ``worker.view``/``report.view``；查看类权限附数据范围（self/dept/tenant），
+  ``worker.view``/``report.view``/``finance.approve``/``cost.view``；查看类权限附数据范围（self/dept/tenant），
   v1 执行层只按 tenant 隔离（dept 过滤等组织树接缝完成后启用）；
 - 接缝 2 ``DEFAULT_ROLE_SEEDS``：产线四角色 + 流程五角色共 9 个种子；
   ``roles`` 主键 (tenant_id, role_code)，新租户按需复制种子集；
@@ -34,7 +34,7 @@ from typing import Any, Iterator
 from .db_utils import connect_sqlite, enable_wal, transactional
 
 # ---------------------------------------------------------------------------
-# 接缝 1：业务语言权限清单正式版（v1 = 冻结 11 + 新增 2）。
+# 接缝 1：业务语言权限清单正式版（v1 = 冻结 11 + 新增 4）。
 # code 稳定不变；gate 列是「权限 ↔ 现有审批 Gate」的唯一映射事实源；
 # 新增权限必须先在此登记 code/label/gate 再进角色（upsert_role 校验）。
 # 查看类权限附 scopes（数据范围维度）；其余默认租户全量。
@@ -58,6 +58,8 @@ PERMISSION_CATALOG: tuple[dict[str, Any], ...] = (
     # 新增 2 项（交接包接缝 1）：花名册/日报查看独立于 sensitive.review 授权。
     {"code": "worker.view", "label": "查看人员主数据（花名册）", "gate": "-", "scopes": PERMISSION_SCOPES},
     {"code": "report.view", "label": "查看生产日报", "gate": "-", "scopes": PERMISSION_SCOPES},
+    {"code": "finance.approve", "label": "批准财务结果生效", "gate": "finance"},
+    {"code": "cost.view", "label": "查看成本与财务数据", "gate": "-", "scopes": PERMISSION_SCOPES},
     {"code": "identity.admin", "label": "管理组织架构与权限分配", "gate": "-"},
 )
 
@@ -73,6 +75,7 @@ GATE_PERMISSION: dict[str, str] = {
     "engineering": "engineering.approve",
     "procurement": "procurement.supplement",
     "apply": "schedule.release",
+    "finance": "finance.approve",
 }
 
 #: 受信头旧角色 → 权限的过渡映射（接缝 4：``IDENTITY_LEGACY_ROLES`` 开关
@@ -112,6 +115,8 @@ DEFAULT_ROLE_SEEDS: tuple[dict[str, Any], ...] = (
      "permissions": ["order.view", "report.view", "schedule.solve"]},
     {"role_code": "worker", "name": "工人",
      "permissions": ["order.view@self"]},
+    {"role_code": "finance-officer", "name": "财务审批",
+     "permissions": ["order.view", "cost.view", "finance.approve"]},
 )
 
 _DEPT_SPLIT_RE = re.compile(r"[、，,／/]")

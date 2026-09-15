@@ -41,7 +41,7 @@ operation 白名单见 `m6_tooling.py`；调用方式见同级 `SKILL.md`。
 | `order_id` | `string` | 否 | 订单号（业务键之一）。 |
 | `product_code` | `string` | 否 | 产品编码（成本对象）。 |
 | `batch_no` | `string` | 否 | 批次号（业务键之一）。 |
-| `quantity` | `number` | 否 | 数量：单台单位成本 × 数量 = 总成本。缺失按 0 计（total_cost=0）。 |
+| `quantity` | `number` | 否 | 数量：单台单位成本 × 数量 = 总成本。缺失时保留 unit_cost，`total_cost=null` 并标 `missing_quantity`/`cost_incomplete`，不得按 0 计。 |
 | `bom_lines` | `array` | 否 | BOM 行事实（装配层给，勿手填）：[{material_code, qty_per, unit_price, loss_rate}]。unit_price 是 BOM 价（库存口径用），loss_rate 为损耗率小数（0.05=5%）。 |
 | `routing_steps` | `array` | 否 | 工艺路线工序事实：[{operation_id, standard_minutes}]，standard_minutes 以分钟计。缺标准工时计入 incomplete。 |
 | `hour_rate` | `number` | 否 | 人工费率（元/小时）。**口径值**：未给出时按缺失处理（标 cost_incomplete），不编造默认费率。 |

@@ -331,7 +331,7 @@ def _apply_m6_costing_confirm(state: dict[str, Any], gate: dict[str, Any],
         "evidence_ref": f"m6:{snapshot_id}:confirm",
         "detail": f"Finance Gate 批准 → trial→confirmed（actor={actor or 'human'}），正式成本落账"}]
     return {"outputs": {"confirm_costing_snapshot": {**envelope, "data": stamped,
-                                                    "evidence": evidence}},
+                                                    "result": stamped, "evidence": evidence}},
             "trace_events": [{"event": "m6.costing_confirmed", "snapshot_id": snapshot_id,
                               "period": result.get("period"), "changed": bool(result.get("changed")),
                               "at": now_iso()}]}
@@ -376,7 +376,8 @@ def _apply_m6_close_month(state: dict[str, Any], gate: dict[str, Any],
         "evidence_ref": f"m6:{period}:close",
         "detail": f"Finance Gate 批准 → 月账冻结（confirmed {result.get('snapshot_count')} 版，"
                   f"合计 {totals['total_cost']}；actor={actor or 'human'}）"}]
-    return {"outputs": {"close_month_costing": {**envelope, "data": stamped, "evidence": evidence}},
+    return {"outputs": {"close_month_costing": {**envelope, "data": stamped,
+                                                  "result": stamped, "evidence": evidence}},
             "trace_events": [{"event": "m6.month_closed", "period": period,
                               "closed_at": result.get("closed_at"), "at": now_iso()}]}
 
@@ -415,7 +416,8 @@ def _apply_m6_document_commit(state: dict[str, Any], gate: dict[str, Any],
         "module": "m6", "source_ref": f"document:{doc_id}",
         "evidence_ref": f"m6:{doc_id}:confirm",
         "detail": f"Finance Gate 批准 → 单据 trial→confirmed（actor={actor or 'human'}）"}]
-    return {"outputs": {tool: {**envelope, "data": stamped, "evidence": evidence}},
+    return {"outputs": {tool: {**envelope, "data": stamped,
+                               "result": stamped, "evidence": evidence}},
             "trace_events": [{"event": "m6.document_confirmed", "doc_id": doc_id,
                               "at": now_iso()}]}
 
@@ -454,7 +456,8 @@ def _apply_m6_asset_commit(state: dict[str, Any], gate: dict[str, Any],
         "evidence_ref": f"m6:{asset_id}:confirm",
         "detail": f"Finance Gate 批准 → 资产台账修订 v{result.get('revision')} "
                   f"trial→confirmed（actor={actor or 'human'}）"}]
-    return {"outputs": {tool: {**envelope, "data": stamped, "evidence": evidence}},
+    return {"outputs": {tool: {**envelope, "data": stamped,
+                               "result": stamped, "evidence": evidence}},
             "trace_events": [{"event": "m6.asset_confirmed", "asset_id": asset_id,
                               "revision": result.get("revision"), "at": now_iso()}]}
 

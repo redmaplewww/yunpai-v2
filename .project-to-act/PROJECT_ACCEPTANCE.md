@@ -4,10 +4,10 @@
 
 ## 当前验收结论
 
-- 结论：V2 工具迁移 6 分片（M0–M5）已全合入集成分支并全绿（E-004）；F-004 完成、F-006 完成（E-006）；Gate 覆盖缺口 0（E-005，R21 收口）；**M6 财务（F-008）B0a/B0b/R0/R1a + B1（三批）+ B2 + B3 + B4 + 跨线收口（D-009/D-010）+ B5 库存财务视图 + B6 订单/工资 + B7 两个 Skill（D-011） 通过（E-008：实体收口 + 内核搬运 + 成本账 6 工具与三段式 commit 钩子 + 3 件内核读工具 + 单据台账 6 件 + 凭据 2 件 + 资产台账 3 件 + 库存财务视图 1 件 + 订单/工资 3 件 + 技能 2 件）**
+- 结论：V2 工具迁移 6 分片（M0–M5）已全合入集成分支并全绿（E-004）；F-004 完成、F-006 完成（E-006）；Gate 覆盖缺口 0（E-005，R21 收口）；**M6 财务（F-008）B0a/B0b/R0/R1a + B1–B7（D-009/D-010/D-011）及文件规范收敛、夹具化独立测试通过（E-008/E-009/E-010）**。
 - 验收范围：V2-M3 注册批次（119 工具）+ 集成收口 + W913 双路径联调 + **M6 财务（B0a/B0b/R0/R1a + B1 三批 + B2 + B3 + B4 + 跨线收口 + B5 + B6 + B7，工具面 147 / 技能 10）**
-- 最后检查：2026-09-14
-- 遗留问题：**B-001 已裁定（D-005，三段式先批准后落库）；D-010 把该条文收窄为 M6 专属，B-014 据此已关闭（存量 M0–M5 写工具维持"执行后开门"，非设计债）**；B-003..B-007 已修复（第四轮 K1–K6）；B-013（R0）已决策并执行首批；**M6 计划批次（B0a–B7）已全部走完**——仅余供应商报价 2 件（⛔ 阻塞 R1b，需先定 `supplier_quote` 实体 + 财务口径），非批次遗留
+- 最后检查：2026-09-15
+- 遗留问题：**B-001 已裁定（D-005，三段式先批准后落库）；D-010 把该条文收窄为 M6 专属，B-014 据此已关闭（存量 M0–M5 写工具维持"执行后开门"，非设计债）**；B-003..B-007 已修复（第四轮 K1–K6）；B-013（R0）已决策并执行首批；**M6 计划批次（B0a–B7）及夹具化测试已走完**——仅余供应商报价 2 件（⛔ 阻塞 R1b，需先定 `supplier_quote` 实体 + 财务口径），全局 Data Manager/Domain/Repository 与 Tool/Skill 重命名待 main 架构冻结
 
 ## 验收标准
 
@@ -52,3 +52,6 @@
 | 2026-09-14 | M6 跨线收口（D-009 把老仓 D-020 在 v2 过号 + D-010 三段式收窄为 M6 专属、B-014 关闭 + A1 真 canonical 链路测试；F-008） | E-008 | 通过（**786 passed/3 skipped**，基线 784/2 零回归；check_contracts exit 0；`grep D4/D-020` 归零；BOM 链路真库往返**实证**、SOP 链路 skip 待在途分支合入） | `standard_time` 单位口径未定（仓库已有 `_standard_minutes_of` 但 M6 未接线，**不擅自猜单位**）；`loss_rate` 隐式 0.0 与 D-006 不一致 | F-008 进行中；D-009/D-010 新增；**B-014 关闭** |
 | 2026-09-14 | M6 财务 B5 + B6（库存财务视图 1 件 + 订单/工资 3 件；F-008，工具面 143→**147**） | E-008 | 通过（**802 passed/3 skipped**，基线 786/3 零回归；库存三条 fail-closed + `stock_class` 投影回归锁；工资「不拿日报顶替报工」与「口径缺省不得静默归零」双回归锁；check_contracts exit 0，工具 147 / handler 128 / 可见 137） | B7 待做；供应商报价两件 ⛔ R1b；老仓四张工资 canonical 面 v2 全无；`inventory`/`production_daily_report` 等 6 类不在 `ENTITY_TYPES`（M0 口径待定） | F-008 进行中；`read_inventory_facts` 投影缺陷已修 |
 | 2026-09-14 | M6 财务 B7（两个 Skill 新建 + 契约收口；F-008 / D-011，技能 8→**10**） | E-008 | 通过（**825 passed/3 skipped**，基线 802/3 零回归；新增 `test_m6_skills.py`(23)：覆盖与不相交、两个 default 皆纯读、**白名单外 `tool` 一律 `ValueError`**（含「两个 Skill 都调不到 M0/M5 工具」）、G2 顶层键/`files` 别名可到工具入参、`references/tools.md` 与 operation map 逐项对齐；check_contracts exit 0，工具 147 不变——**skill 不算工具**） | 供应商报价两件 ⛔ R1b；工资 canonical 面；`inventory` 等 6 类入 `ENTITY_TYPES`（M0 口径）；`standard_time` 单位口径；`loss_rate` 隐式 0.0 与 D-006 不一致 | F-008 计划批次已走完（余 2 件受 R1b 阻塞）；D-011 新增 |
+| 2026-09-15 | M6 文件规范收敛增量：对账显式交易缺金额/方向 fail-closed；资产零基准标记 `missing_basis_value`；M6 `m6_db_path` 条件透传；Tool 返回增加 `result/error/business_status` 并同步 M6 output schema；新增 3 条回归测试 | E-009 | 通过（M6 165 passed/1 skipped；全仓 828 passed/3 skipped；check_contracts exit 0；JSON Schema 全部有效；`git diff --check` 通过；D-008 刻意保留 1 条 W2，因此 `--strict` 按当前检查器会失败） | 全局 Data Manager / Domain Service / Repository 与 Tool/Skill 文件重命名仍待 main 架构冻结 | P-015 已完成，未提交 |
+| 2026-09-15 | M6 夹具化独立测试与口径修复：7 组带 `source_ref`/`evidence` 的 JSON 夹具；缺数量、空工资事实、财务角色、commit `data/result` 一致性回归 | E-010 | 通过（全仓 834 passed/5 skipped；新增夹具测试 7 项；身份/门禁聚焦 24 passed；check_contracts exit 0；compileall 通过） | 真实 canonical 工资事实尚未接入；身份登记不等于 API 强制授权；全局架构命名迁移等待 main 冻结 | P-016 已完成，工作树未提交 |
+| 2026-09-15 | M6 夹具化独立测试与口径修复：7 组带 `source_ref`/`evidence` 的 JSON 夹具；缺数量、空工资事实、财务角色、commit `data/result` 一致性回归 | E-010 | 通过（全仓 834 passed/5 skipped；新增夹具测试 7 项；身份/门禁聚焦 24 passed；check_contracts exit 0；compileall 通过） | 真实 canonical 工资事实尚未接入；身份登记不等于 API 强制授权；全局架构命名迁移等待 main 冻结 | P-016 已完成，工作树未提交 |

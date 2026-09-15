@@ -276,6 +276,16 @@ def compute_piece_pay(report_events: Any, piece_rates: Any) -> dict[str, Any]:
     events = report_events if isinstance(report_events, list) else []
     rates = piece_rates if isinstance(piece_rates, list) else []
 
+    # An empty fact set means that this period has no available payroll
+    # source.  It is not the same as an in-place set with an unmatched row:
+    # the former is explicitly absent, while the latter is incomplete.
+    if not events or not rates:
+        return {
+            "totals": [], "details": [], "cost_incomplete": False,
+            "facts_present": False,
+            "missing": [{"reason": "missing_salary_facts"}],
+        }
+
     rate_map: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for rate in rates:
         if not isinstance(rate, dict):
@@ -322,7 +332,8 @@ def compute_piece_pay(report_events: Any, piece_rates: Any) -> dict[str, Any]:
             "good_qty": round(good_qty, 4), "unit_rate": rate["unit_rate"], "amount": round(amount, 4),
         })
     totals = [{"worker_id": worker, "piece_pay": round(total, 4)} for worker, total in sorted(by_worker.items())]
-    return {"totals": totals, "details": details, "cost_incomplete": bool(missing), "missing": missing}
+    return {"totals": totals, "details": details, "cost_incomplete": bool(missing),
+            "facts_present": True, "missing": missing}
 
 
 def compute_monthly_pay(
@@ -342,6 +353,12 @@ def compute_monthly_pay(
     salaries = salary_standards if isinstance(salary_standards, dict) else {}
     att = attendance if isinstance(attendance, dict) else {}
     piece = piece_pay if isinstance(piece_pay, dict) else {}
+
+    if not salaries:
+        return {
+            "rows": [], "cost_incomplete": False, "facts_present": False,
+            "incomplete": [], "missing": [{"reason": "missing_salary_facts"}],
+        }
     mult = _num(overtime_multiplier)
     days = _num(work_days)
     hours = _num(hours_per_day)
@@ -369,7 +386,8 @@ def compute_monthly_pay(
             "piece_pay": round(piece_amount, 4),
             "gross_pay": round(gross, 4),
         })
-    return {"rows": rows, "cost_incomplete": bool(incomplete), "incomplete": incomplete}
+    return {"rows": rows, "cost_incomplete": bool(incomplete), "facts_present": True,
+            "incomplete": incomplete, "missing": incomplete}
 
 
 def compute_statement(opening_balance: Any, transactions: Any) -> dict[str, Any]:
@@ -445,6 +463,8 @@ def compute_asset_benefit(
         else:
             total_basis = sum(_num(item.get(basis_key)) for item in items)
         if total_basis <= 0:
+            missing.append({"asset_code": asset, "reason": "missing_basis_value",
+                            "basis": basis_key})
             continue
         for item in items:
             basis = 1.0 if basis_key == "order_count" else _num(item.get(basis_key))

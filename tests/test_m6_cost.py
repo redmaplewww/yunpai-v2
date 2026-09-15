@@ -165,14 +165,15 @@ def test_piece_pay_applies_rate_by_report_date_and_deducts_scrap():
     assert result["totals"] == [{"worker_id": "W1", "piece_pay": 180.0}]
 
 
-def test_piece_pay_marks_missing_rate():
+def test_piece_pay_marks_missing_fact_set():
     result = compute_piece_pay(
         [{"worker_id": "W1", "station_code": "S1", "product_code": "P1",
           "quantity_report": 10, "report_date": "2026-09-07"}],
         [],
     )
-    assert result["cost_incomplete"] is True
-    assert result["missing"][0]["reason"] == "missing_piece_rate"
+    assert result["cost_incomplete"] is False
+    assert result["facts_present"] is False
+    assert result["missing"][0]["reason"] == "missing_salary_facts"
 
 
 def test_monthly_pay_composes_salary_overtime_absence_piece():
@@ -201,3 +202,16 @@ def test_statement_balances_opening_plus_inflow_minus_outflow():
     assert result["closing_balance"] == 1300.0
     assert result["inflow"] == 500.0
     assert result["outflow"] == 200.0
+
+
+def test_asset_benefit_marks_zero_basis_as_incomplete():
+    """资产分摊基准缺失时不得静默跳过。"""
+    result = compute_asset_benefit(
+        [{"asset_code": "MOLD-1", "product_code": "P1"}],
+        {"MOLD-1": 1000.0},
+    )
+    assert result["allocations"] == []
+    assert result["cost_incomplete"] is True
+    assert result["missing"] == [{
+        "asset_code": "MOLD-1", "reason": "missing_basis_value", "basis": "quantity",
+    }]

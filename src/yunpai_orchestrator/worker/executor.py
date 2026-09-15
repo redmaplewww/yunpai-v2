@@ -16,7 +16,7 @@ def tool_context(state: RunStateV2, tool: str) -> dict[str, Any]:
     request = state.get("request", {})
     principal = request.get("principal") or {}
     actor_user = principal.get("user") or request.get("actor_user") or "agent"
-    return {
+    context = {
         "task_id": state.get("task_id", ""),
         "run_id": state.get("run_id", ""),
         "tenant_id": state.get("tenant_id", "default"),
@@ -29,6 +29,13 @@ def tool_context(state: RunStateV2, tool: str) -> dict[str, Any]:
         # 它们静默退化为 "operator"。此处只做同源别名，不引入第二事实源。
         "actor": actor_user,
     }
+    # M6 uses an isolated ledger path during local execution. Preserve it in
+    # the shared context when the request supplies one; do not add an empty
+    # key so the existing context contract remains stable for other modules.
+    m6_db_path = request.get("m6_db_path")
+    if m6_db_path:
+        context["m6_db_path"] = str(m6_db_path)
+    return context
 
 
 def _error_envelope(tool: str, code: str, message: str) -> dict[str, Any]:

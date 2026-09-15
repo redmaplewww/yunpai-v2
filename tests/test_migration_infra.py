@@ -68,6 +68,14 @@ def test_tool_context_contract_has_no_registry_key():
     assert ctx["idempotency_key"] == "T:tool"
 
 
+def test_tool_context_forwards_m6_ledger_path_only_when_supplied():
+    """M6 本地账路径属于请求上下文，不能在缺省时污染通用 context。"""
+    state = {"task_id": "T", "run_id": "R", "tenant_id": "x",
+             "request": {"m6_db_path": "D:/tmp/m6.sqlite"}}
+    ctx = tool_context(state, "save_costing_snapshot")
+    assert ctx["m6_db_path"] == "D:/tmp/m6.sqlite"
+
+
 def test_build_default_skill_registry_injects_tool_registry():
     """裁决 1：registry 在**构造时**注入，不进 context。"""
     fake = _FakeRegistry()

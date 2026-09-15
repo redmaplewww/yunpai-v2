@@ -38,7 +38,7 @@
           },
           "quantity": {
             "type": "number",
-            "description": "数量：单台单位成本 × 数量 = 总成本。缺失按 0 计（total_cost=0）。"
+            "description": "数量：单台单位成本 × 数量 = 总成本。缺失时保留 unit_cost，total_cost=null，并标 missing_quantity/cost_incomplete，不得按 0 计。"
           },
           "bom_lines": {
             "type": "array",
@@ -109,6 +109,18 @@
           },
           "data": {
             "type": "object"
+          },
+          "result": {
+            "type": "object"
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "business_status": {
+            "type": "string"
           }
         }
       },
@@ -149,6 +161,18 @@
           },
           "data": {
             "type": "object"
+          },
+          "result": {
+            "type": "object"
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "business_status": {
+            "type": "string"
           }
         }
       },
@@ -189,6 +213,18 @@
           },
           "data": {
             "type": "object"
+          },
+          "result": {
+            "type": "object"
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "business_status": {
+            "type": "string"
           }
         }
       },
@@ -240,6 +276,18 @@
           },
           "data": {
             "type": "object"
+          },
+          "result": {
+            "type": "object"
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "business_status": {
+            "type": "string"
           }
         }
       },
@@ -274,6 +322,18 @@
           },
           "data": {
             "type": "object"
+          },
+          "result": {
+            "type": "object"
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "business_status": {
+            "type": "string"
           }
         }
       },
@@ -311,6 +371,18 @@
           },
           "data": {
             "type": "object"
+          },
+          "result": {
+            "type": "object"
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "business_status": {
+            "type": "string"
           }
         }
       },
@@ -400,6 +472,18 @@
           },
           "data": {
             "type": "object"
+          },
+          "result": {
+            "type": "object"
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "business_status": {
+            "type": "string"
           }
         }
       },
@@ -456,6 +540,18 @@
           },
           "data": {
             "type": "object"
+          },
+          "result": {
+            "type": "object"
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "business_status": {
+            "type": "string"
           }
         }
       },
@@ -520,6 +616,18 @@
           },
           "data": {
             "type": "object"
+          },
+          "result": {
+            "type": "object"
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "business_status": {
+            "type": "string"
           }
         }
       },
@@ -578,6 +686,18 @@
           },
           "data": {
             "type": "object"
+          },
+          "result": {
+            "type": "object"
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "business_status": {
+            "type": "string"
           }
         }
       },
@@ -649,6 +769,18 @@
           },
           "data": {
             "type": "object"
+          },
+          "result": {
+            "type": "object"
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "business_status": {
+            "type": "string"
           }
         }
       },
@@ -700,6 +832,18 @@
           },
           "data": {
             "type": "object"
+          },
+          "result": {
+            "type": "object"
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "business_status": {
+            "type": "string"
           }
         }
       },
@@ -739,6 +883,18 @@
           },
           "data": {
             "type": "object"
+          },
+          "result": {
+            "type": "object"
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "business_status": {
+            "type": "string"
           }
         }
       },
@@ -792,7 +948,8 @@
             "type": "array",
             "description": "对账明细：[{direction(in|out), amount, ref?}]；direction in=增加余额（客户发货确认/供应商入库）、out=减少（客户回款/供应商付款）。",
             "items": {
-              "type": "object"
+              "type": "object",
+              "required": ["direction", "amount"]
             }
           },
           "lines": {
@@ -823,6 +980,18 @@
           },
           "data": {
             "type": "object"
+          },
+          "result": {
+            "type": "object"
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "business_status": {
+            "type": "string"
           }
         }
       },
@@ -870,6 +1039,18 @@
           },
           "data": {
             "type": "object"
+          },
+          "result": {
+            "type": "object"
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "business_status": {
+            "type": "string"
           }
         }
       },
@@ -908,6 +1089,18 @@
           },
           "data": {
             "type": "object"
+          },
+          "result": {
+            "type": "object"
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "business_status": {
+            "type": "string"
           }
         }
       },
@@ -961,7 +1154,8 @@
             "type": "array",
             "description": "显式对账明细（覆盖依据生成）：[{direction(in|out), amount, ref?}]。",
             "items": {
-              "type": "object"
+              "type": "object",
+              "required": ["direction", "amount"]
             }
           },
           "delivery_notes": {
@@ -991,6 +1185,18 @@
           },
           "data": {
             "type": "object"
+          },
+          "result": {
+            "type": "object"
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "business_status": {
+            "type": "string"
           }
         }
       },
@@ -1022,6 +1228,18 @@
           },
           "data": {
             "type": "object"
+          },
+          "result": {
+            "type": "object"
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "business_status": {
+            "type": "string"
           }
         }
       },
@@ -1088,6 +1306,18 @@
           },
           "data": {
             "type": "object"
+          },
+          "result": {
+            "type": "object"
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "business_status": {
+            "type": "string"
           }
         }
       },
@@ -1141,6 +1371,18 @@
           },
           "data": {
             "type": "object"
+          },
+          "result": {
+            "type": "object"
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "business_status": {
+            "type": "string"
           }
         }
       },
@@ -1195,6 +1437,18 @@
           },
           "data": {
             "type": "object"
+          },
+          "result": {
+            "type": "object"
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "business_status": {
+            "type": "string"
           }
         }
       },
@@ -1245,6 +1499,18 @@
           },
           "data": {
             "type": "object"
+          },
+          "result": {
+            "type": "object"
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "business_status": {
+            "type": "string"
           }
         }
       },
@@ -1286,6 +1552,18 @@
           },
           "data": {
             "type": "object"
+          },
+          "result": {
+            "type": "object"
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "business_status": {
+            "type": "string"
           }
         }
       },
@@ -1337,6 +1615,18 @@
           },
           "data": {
             "type": "object"
+          },
+          "result": {
+            "type": "object"
+          },
+          "error": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "business_status": {
+            "type": "string"
           }
         }
       },
