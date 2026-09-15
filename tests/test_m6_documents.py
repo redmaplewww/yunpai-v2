@@ -287,6 +287,8 @@ def test_quotation_propose_then_finance_gate_commit(tmp_path, monkeypatch):
     assert saved["status"] == STATUS_TRIAL               # propose：库里是草稿
     gate = _pending(out)["gate"]
     assert gate["type"] == "finance" and gate["tool"] == "save_quotation"
+    assert gate["review"]["doc_type"] == "quotation"
+    assert gate["review"]["line_count"] == 1
     assert M6Store(str(db)).get_document(saved["doc_id"])["status"] == STATUS_TRIAL
     assert _confirmed_docs(db) == []                      # 未批准前不得生效
     assert repo.get(state["run_id"])["pending_gate"]["type"] == "finance"

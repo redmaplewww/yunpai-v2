@@ -202,6 +202,8 @@ def test_asset_upsert_propose_then_finance_commit(tmp_path, monkeypatch):
     saved = out["outputs"]["upsert_asset_ledger"]["data"]
     assert saved["status"] == STATUS_TRIAL                  # propose：草稿
     assert _pending(out)["gate"]["type"] == "finance"
+    assert _pending(out)["gate"]["review"]["asset_code"] == "MOLD-01"
+    assert _pending(out)["gate"]["review"]["original_value"] == 10000.0
     assert M6Store(str(db)).effective_asset("MOLD-01") is None    # 未批准 → 账上无生效值
 
     resumed = asyncio.run(graph.ainvoke(

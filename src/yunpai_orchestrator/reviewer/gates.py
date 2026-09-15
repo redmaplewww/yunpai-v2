@@ -42,7 +42,8 @@ class GateError(ValueError):
 
 def make_gate(gate_type: str, tool: str, reason: str, *, step_id: str = "",
               payload_digest: str = "", code: str = "", message: str = "",
-              missing_fields: list[Any] | None = None) -> dict[str, Any]:
+              missing_fields: list[Any] | None = None,
+              review: dict[str, Any] | None = None) -> dict[str, Any]:
     """建门；``code``/``message``/``missing_fields`` 为可诊断字段（非空才写入）。
 
     这三项由 ``rules.evaluate`` 从工具结果抽取后经 graph 传入：没有它们，
@@ -64,6 +65,8 @@ def make_gate(gate_type: str, tool: str, reason: str, *, step_id: str = "",
         gate["message"] = message
     if missing_fields:
         gate["missing_fields"] = list(missing_fields)
+    if review:
+        gate["review"] = dict(review)
     return gate
 
 

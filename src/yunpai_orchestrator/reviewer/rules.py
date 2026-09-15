@@ -433,7 +433,8 @@ def _diagnostics(result: dict[str, Any]) -> dict[str, Any]:
     - ``message``：errors[0].message → result.message → ``data.recovery`` →
       ``data.open_customer_questions[].question``（M2 skill 的补数问句）；
     - ``missing_fields``：``data.missing`` → ``data.missing_fields`` →
-      ``result.missing_fields`` → ``data.open_customer_questions[].field``。
+      ``result.missing_fields`` → ``data.open_customer_questions[].field``；
+    - ``review``：成功写入工具显式提供的 ``data.review_summary``，供审批人查看。
     """
     errors = result.get("errors") if isinstance(result.get("errors"), list) else []
     first = errors[0] if errors and isinstance(errors[0], dict) else {}
@@ -449,11 +450,15 @@ def _diagnostics(result: dict[str, Any]) -> dict[str, Any]:
     message = str(first.get("message") or result.get("message") or data.get("recovery") or "")
     if not message:
         message = "；".join(str(q.get("question") or "") for q in questions if str(q.get("question") or ""))
-    return {
+    diagnostics = {
         "code": str(first.get("code") or result.get("code") or ""),
         "message": message,
         "missing_fields": missing,
     }
+    review = data.get("review_summary")
+    if isinstance(review, dict) and review:
+        diagnostics["review"] = dict(review)
+    return diagnostics
 
 
 def evaluate(tool: str, result: dict[str, Any], spec: Any | None = None) -> list[dict[str, Any]]:

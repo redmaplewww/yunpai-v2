@@ -41,6 +41,17 @@ def test_blocked_input_maps_to_data_gate():
     assert findings and findings[0]["gate"] == "blocked_input"
 
 
+def test_review_summary_is_carried_only_when_present():
+    result = {"success": True, "data": {"review_summary": {"total_cost": 810.0,
+                                                               "cost_incomplete": False}}}
+    finding = rules.evaluate("confirm_costing_snapshot", {**result, "data": {
+        **result["data"], "pending_confirmation": True}})[0]
+    assert finding["review"] == {"total_cost": 810.0, "cost_incomplete": False}
+    legacy = make_gate("candidate", "ingest_canonical", "reason")
+    assert set(legacy) == {"type", "tool", "step_id", "reason", "allowed_roles",
+                           "payload_digest", "opened_at"}
+
+
 def test_no_auto_approve():
     """红线：任何路径都不得自动放行人工门（旧审计 P0 教训）。"""
     assert rules.AUTO_APPROVE_ALLOWED is False

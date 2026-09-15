@@ -13,8 +13,9 @@
 | P-011 | Gate 覆盖缺口微收口（R21：`data_import_commit` 声明对齐 + 断言） | 已完成 | Agent | 全量 pytest 643 passed/4 skipped + check_contracts exit 0 + 缺口 0 | E-005 | 2026-09-09 |
 | P-012 | W913 workflow 路径打通（INT2 第四轮 · K1–K6：M0 前向装配 / 门补数可见 / 工序形状 / 降级日历 / 降级资源） | 已完成 | Agent | workflow 路径 `completed` + `m5.released` + 判定器 PASS 5/5；全量 pytest 659 passed/4 skipped + check_contracts exit 0 | E-006 | 2026-09-09 |
 | P-014 | M6 财务开发（F-008）：B0a + B0b + R0 + R1a + B1（三批）+ B2 + B3 + B4 + 跨线收口（D-009/D-010）+ B5 + B6 + **B7（两个 skill 新建 + 契约收口，D-011）均已完成**——计划 §9 的批次已全部走完；余 **2 件**（`list_supplier_quotes`/`get_supplier_quote`）仍 ⛔ 阻塞 R1b，故本任务保持「进行中」 | 进行中 | Agent | 各批次完成条件见《M6-开发计划-v2口径-20260913.md》§9；pytest **825 passed/3 skipped** + check_contracts exit 0（工具 **147** / handler **128** / M6=24；**技能 10**） | E-008 | 2026-09-14 |
-| P-015 | M6 文件规范收敛：对账显式金额校验、资产零基准缺失标记、M6 路径上下文透传、Tool 标准返回字段、契约 Schema 与回归测试同步 | 已完成（未提交） | Agent | M6 聚焦测试 165 passed/1 skipped；check_contracts --strict 通过；任务记录见 `docs/PLAN-M6-standard-conformance-20260915.md` | E-009 | 2026-09-15 |
-| P-016 | M6 夹具化独立测试：缺数量/工资事实语义、财务角色登记、来源证据、commit 信封一致性与 7 组可重复夹具 | 已完成（未提交） | Agent | 全量 pytest 834 passed/5 skipped；check_contracts exit 0；夹具与执行清单见 `docs/TEST-M6-fixture-pack-20260915.md` | E-010 | 2026-09-15 |
+| P-015 | M6 文件规范收敛：对账显式金额校验、资产零基准缺失标记、M6 路径上下文透传、Tool 标准返回字段、契约 Schema 与回归测试同步 | 已完成 | Agent | M6 聚焦测试 165 passed/1 skipped；check_contracts **默认模式 exit 0**（`--strict` 因 D-008 刻意接受的 2 条 W2 而 exit 1，属预期）；任务记录见 `docs/PLAN-M6-standard-conformance-20260915.md` | E-009 | 2026-09-15 |
+| P-016 | M6 夹具化独立测试：缺数量/工资事实语义、财务角色登记、来源证据、commit 信封一致性与 7 组可重复夹具 | 已完成 | Agent | 全量 pytest 834 passed/5 skipped；check_contracts exit 0；夹具与执行清单见 `docs/TEST-M6-fixture-pack-20260915.md` | E-010 | 2026-09-15 |
+| P-017 | M6 补充轮次：**T6** finance 门携带被审阅的合计（审批可见性）、**T7** 补 `/runs` 与 `/runs/{id}/resume` 的 API 层用例 | 已完成 | Agent（Codex） | T6/T7 已实现；聚焦回归 46 passed；API `create_app` + SQLiteRunRepository + resume approve/reject/operator/header 路径全部覆盖；`pending_gate` 按 `public_state` 直接承载门对象 | E-011 | 2026-09-15 |
 
 > 编号说明：`P-013` 由在途分支 `feat/migration-integration-20260909` 的基础资料上传接线（G1–G4）占用，故 M6 从 `P-014` 起编（同批占用 `F-007`/`E-007`/`B-008..B-012`）。
 

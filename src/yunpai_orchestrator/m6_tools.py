@@ -377,7 +377,7 @@ async def m6_confirm_costing_snapshot(payload: dict[str, Any],
                      f"{snapshot.get('period')} 月账已冻结：该期间不得再确认成本",
                      ctx, "m6-confirm",
                      data={"snapshot_id": snapshot_id, "period": snapshot.get("period")})
-    return _ok({
+    data = {
         "snapshot_id": snapshot_id, "status": STATUS_TRIAL, "pending_confirmation": True,
         "period": snapshot.get("period"), "order_id": snapshot.get("order_id"),
         "product_code": snapshot.get("product_code"), "batch_no": snapshot.get("batch_no"),
@@ -385,7 +385,13 @@ async def m6_confirm_costing_snapshot(payload: dict[str, Any],
         "total_cost": snapshot.get("total_cost"), "basis": snapshot.get("basis"),
         "cost_incomplete": snapshot.get("cost_incomplete"),
         "note": str(payload.get("note") or ""),
-    }, ctx, "m6-confirm", evidence=[
+    }
+    data["review_summary"] = {
+        key: data.get(key) for key in (
+            "snapshot_id", "period", "order_id", "product_code", "batch_no",
+            "quantity", "unit_cost", "total_cost", "basis", "cost_incomplete")
+    }
+    return _ok(data, ctx, "m6-confirm", evidence=[
         _evidence(f"snapshot:{snapshot_id}",
                   "请求财务确认：trial→confirmed 须 finance 门批准后由 commit 钩子落库")])
 
@@ -408,14 +414,19 @@ async def m6_close_month_costing(payload: dict[str, Any],
                      ctx, "m6-close",
                      data={"period": period, "closed_at": frozen.get("closed_at")})
     summary = store.month_summary(period, tenant_id)
-    return _ok({
+    data = {
         "period": period, "pending_close": True, "month_summary": summary,
         "snapshot_count": int(summary.get("snapshot_count") or 0),
         "total_cost": _num(summary.get("total_cost")),
         "trial_count": int(summary.get("trial_count") or 0),
         "trial_excluded": True,
         "note": str(payload.get("note") or ""),
-    }, ctx, "m6-close", evidence=[
+    }
+    data["review_summary"] = {
+        key: data.get(key) for key in (
+            "period", "total_cost", "snapshot_count", "trial_count", "trial_excluded")
+    }
+    return _ok(data, ctx, "m6-close", evidence=[
         _evidence(f"month:{period}",
                   f"请求月结：confirmed {summary.get('snapshot_count')} 版 / "
                   f"合计 {summary.get('total_cost')}（trial {summary.get('trial_count')} 版不计入）")])
@@ -843,6 +854,14 @@ async def m6_save_quotation(payload: dict[str, Any],
         data["data"]["lines"] = quote["lines"]
         data["data"]["missing"] = quote["missing"]
         data["data"]["assumptions"] = quote["assumptions"]
+        data["data"]["review_summary"] = {
+            "doc_no": data["data"].get("doc_no"),
+            "doc_type": "quotation",
+            "counterparty_code": data["data"].get("counterparty_code"),
+            "line_count": len(quote["lines"]),
+            "totals": {"total": quote["total"]},
+            "basis_source": "quotation_facts",
+        }
     return data
 
 
@@ -1039,6 +1058,19 @@ async def m6_save_statement(payload: dict[str, Any],
                              "closing_balance": totals["closing_balance"],
                              "totals_source": totals["source"],
                              "missing": totals.get("missing") or []})
+        data["data"]["review_summary"] = {
+            "doc_no": data["data"].get("doc_no"),
+            "doc_type": "statement",
+            "counterparty_code": data["data"].get("counterparty_code"),
+            "line_count": len(totals.get("lines") or []),
+            "totals": {
+                "opening_balance": totals["opening_balance"],
+                "inflow": totals["inflow"],
+                "outflow": totals["outflow"],
+                "closing_balance": totals["closing_balance"],
+            },
+            "basis_source": totals["source"],
+        }
     return data
 
 
@@ -1110,6 +1142,12 @@ async def m6_upsert_asset_ledger(payload: dict[str, Any],
         "effective_revision": int(effective["revision"]) if effective else None,
         "effective_acquisition_cost": (_num_optional(effective.get("acquisition_cost"))
                                        if effective else None),
+    }
+    data["review_summary"] = {
+        "asset_code": asset_code,
+        "revision": revision,
+        "original_value": data["acquisition_cost"],
+        "effective_date": str(payload.get("effective_date") or payload.get("acquired_at") or "") or None,
     }
     return _ok(data, ctx, "m6-asset", evidence=[
         _evidence(f"asset:{asset_code}@v{revision}",

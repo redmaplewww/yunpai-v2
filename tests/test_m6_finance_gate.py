@@ -120,6 +120,8 @@ def test_save_trial_then_confirm_through_finance_gate(m6_db):
     gate = _pending(out)["gate"]
     assert gate["type"] == "finance" and gate["tool"] == "confirm_costing_snapshot"
     assert gate["allowed_roles"] == list(FINANCE_ROLES)
+    assert gate["review"]["total_cost"] == saved["total_cost"] == 810.0
+    assert gate["review"]["cost_incomplete"] is False
     assert store.get_snapshot(snapshot_id)["status"] == STATUS_TRIAL
     assert _confirmed_rows(m6_db) == []
     # 挂起被镜像到 RunRepository（前端/GET 可见）
@@ -210,6 +212,9 @@ def test_close_month_freezes_reviewed_totals(m6_db):
     # 确认生效后继续走到月结：第二次挂起应在 close_month_costing 上
     gate = _pending(out)["gate"]
     assert gate["tool"] == "close_month_costing" and gate["type"] == "finance"
+    assert gate["review"]["period"] == PERIOD
+    assert gate["review"]["total_cost"] == 810.0
+    assert gate["review"]["trial_excluded"] is True
     store = M6Store(str(m6_db))
     assert store.get_month_close(PERIOD) is None             # 未批准前不得冻结
     reviewed = out["outputs"]["close_month_costing"]["data"]

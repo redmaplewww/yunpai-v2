@@ -7,7 +7,7 @@
 
 ## 范围
 
-**在范围内**：M6 财务模块在**假数据**下的确定性核算、落库三段式、finance 门禁、隔离与红线。
+**在范围内**：M6 财务模块在**假数据**下的确定性核算、落库三段式、finance 门禁、隔离、API 状态序列化与红线。
 **不在范围内**：真实 canonical 数据齐备性、M1→M5→M6 全链路、M6 Workflow、生产环境验收、存量 M0–M5 写工具改造。
 
 ## 一、测试环境与运行方式
@@ -15,6 +15,7 @@
 ```bash
 # 仓库根，分支 feat/m6-finance-20260913（基线 SHA 见 PLAN 表 A 的 T0 交付）
 python -m pytest tests/ -q -k m6        # M6 聚焦面
+python -m pytest tests/test_api_runs_m6.py -q  # create_app + runs/resume API 面
 python -m pytest -q                     # 全量回归
 python scripts/check_contracts.py       # 契约加载/去重/对齐
 ```
@@ -131,11 +132,25 @@ python scripts/check_contracts.py       # 契约加载/去重/对齐
 | T-52 | Skill 越界拒绝 | 经 M6 skill 调 M0/M5 工具 | 抛 `ValueError`（operation map 白名单） |
 | T-53 | 事实值永不默认 | 取不到单价的行 | 计入 `missing` 且标 `cost_incomplete`；**不得用 0 或默认价冒充** |
 
+### G7 API 层（真实 `create_app`）
+
+| ID | 项目 | 操作 | 预期 / 判据 |
+|---|---|---|---|
+| T-60 | API 创建运行 | `POST /runs` 注入 FX-COST-001、`tools=[save_costing_snapshot, confirm_costing_snapshot]`、临时 `m6_db_path` | HTTP 200；`pending_gate.type=finance`，`allowed_roles` 含 `finance-officer`；`status=waiting_human` |
+| T-61 | API approve | `POST /runs/{id}/resume` 携 `decision=approve`、finance 角色 | HTTP 200；GET 状态中 confirm 输出为 `confirmed`，`committed_by=finance_gate`，并有审批留痕 |
+| T-62 | API reject | 同 T-60，resume `decision=reject` | HTTP 200；M6 快照仍为 `trial`，无 confirmed 生效行，审批记录为 reject |
+| T-63 | API 越权 | resume 携 `roles=[operator]` | HTTP 200 但仍 `waiting_human`；finance 门保持不变，试算快照仍为 `trial` |
+| T-64 | API 角色请求头 | 使用 `X-Actor-User` + `X-Actor-Roles: finance-officer` | 与 T-61 同等通过 |
+| T-65 | API 公共状态 | `GET /runs/{id}` | 固定白名单含 `pending_gate`/`outputs`/`approvals`/`status`；不含 `__interrupt__`；附件 `content_b64`（如存在）脱敏 |
+| T-66 | API 审阅可见性 | 同 T-60 | `pending_gate.review.total_cost=810.0` 且包含 `cost_incomplete`；该字段只展示，不参与授权 |
+
+> API 对外 `pending_gate` 直接承载门对象；Graph 的 `__interrupt__` envelope 只存在内部事件流。该形状与 `state.public_state` 及既有仓储镜像保持一致。
+
 ## 四、验收标准
 
 ### 通过条件（全部满足才算通过）
 
-1. **自动化项全绿**：`python -m pytest tests/ -q -k m6` → **173 passed, 1 skipped**；用例数 174，超过 166 的门槛。
+1. **自动化项全绿**：`python -m pytest tests/ -q -k m6`，并单独执行 `python -m pytest tests/test_api_runs_m6.py -q`；计数以本轮实际输出为准。
 2. **全量无回归**：`python -m pytest -q` 退出码 `0`。
 3. **契约不变**：`python scripts/check_contracts.py` 退出码 `0`，工具计数 `147 / handler 128 / m6 24 / bound_local 128 / unbound 6` 与基线一致（两条 W2 为 D-008 刻意接受项，维持不变）。
 4. **G1 人工项逐条签核**：T-01～T-03 有签核结论与证据路径，不得只写"已检查"。
@@ -164,4 +179,84 @@ python scripts/check_contracts.py       # 契约加载/去重/对齐
 | 工序/人工/制费在真库下的正确性 | 依赖 `standard_time` 单位口径 |
 | 工资的 canonical 事实面 | v2 无 canonical 工资实体，只能显式注入 |
 | 供应商报价两件工具 | ⛔ 阻塞 R1b |
-| 前端/API 可见状态 | 本轮以 Graph 状态与库状态为准 |
+| 前端 UI 可见状态 | 本轮仅覆盖 API `public_state`，不做浏览器验收 |
+
+---
+
+## 附录 A：执行清单（照抄即可）
+
+```bash
+# 1) M6 聚焦面（主判据）
+python -m pytest tests/ -q -k m6
+#    本轮：179 passed, 1 skipped, 0 failed
+
+# 2) 全量回归
+python -m pytest -q
+#    本轮：841 passed, 5 skipped, 0 failed
+
+# 3) 契约校验（必须用默认模式）
+python scripts/check_contracts.py
+#    预期 exit 0；工具 147 / handler 128 / m6 24 / bound_local 128 / unbound 6
+
+# 4) 身份面（T-43 判据，不含 m6 关键字，不会被 -k m6 选中）
+python -m pytest tests/test_identity_placeholder.py -q
+
+# 5) 夹具单独运行
+python -m pytest tests/test_m6_fixture_pack.py -v
+```
+
+> ⚠️ **不要用 `--strict` 判验收**：`python scripts/check_contracts.py --strict` 当前 **exit 1**，原因是 D-008 刻意接受的 2 条 W2（`ingest_recognized`、`save_costing_snapshot` 属「写库但无门」），为已裁定项而非缺陷。验收只认默认模式。
+
+## 附录 B：T-xx → 可执行用例映射
+
+| T-xx | 覆盖用例（`tests/…`） |
+|---|---|
+| T-01 | `test_m6_fixture_pack.py::test_fixture_pack_has_provenance_on_every_record`；回读见 `..._cost_is_deterministic`（`snapshot.evidence.caller_evidence.fixture_id`） |
+| T-02 | 人工：`grep source_ref tests/fixtures/m6/fixture_pack.json`（全为 `fixture:` 前缀）；辅助 `test_fixture_pack_has_provenance_on_every_record` |
+| T-03 | 人工：`tests/fixtures/m6/fixture_pack.json` 的 `expected` 字段 ↔ 本文档 §二 逐条核对 |
+| T-10 / T-11 | `test_m6_cost.py`（材料、工序、损耗用例）；`test_m6_costing_tools.py::test_resolve_prefers_stock_price_when_stock_known` |
+| T-12 | `test_m6_cost.py`（报价加价率用例） |
+| T-13 | `test_m6_cost_tools.py::test_audit_incomplete_never_looks_profitable`、`..._audit_flags_loss_and_low_profit` |
+| T-14 | `test_m6_cost.py::test_statement_balances_opening_plus_inflow_minus_outflow`；`test_m6_fixture_pack.py::test_fixture_expense_asset_statement_and_inventory_values` |
+| T-15 | `test_m6_fixture_pack.py::test_fixture_expense_asset_statement_and_inventory_values`；`test_m6_assets.py`（零基准缺失） |
+| T-16 | `test_m6_fixture_pack.py::test_fixture_monthly_pay_values`、`..._distinguishes_partial_missing_rate`、`..._empty_payroll_is_explicitly_absent` |
+| T-17 | `test_m6_fixture_pack.py::test_fixture_expense_asset_statement_and_inventory_values`；`test_m6_inventory_view.py`（四态 + 态未知） |
+| T-20 | `test_m6_store.py::test_trial_snapshot_not_counted_in_month_summary`；`test_m6_costing_tools.py::test_save_writes_trial_snapshot_with_priced_lines` |
+| T-21 | `test_m6_costing_tools.py::test_save_missing_required_inputs_is_reported_not_fabricated`；Registry 层必填校验路径见 `test_m6_fixture_pack.py` 的 `registry.call()` 调用 |
+| T-22 | `test_m6_costing_tools.py::test_save_derives_snapshot_id_and_reports_duplicate` |
+| T-23 | `test_m6_costing_tools.py::test_save_rejected_after_month_close`；`test_m6_store.py::test_closed_month_blocks_new_writes_and_confirms` |
+| T-24 | `test_m6_costing_tools.py::test_confirm_is_idempotent_and_explicit_about_missing`、`..._confirm_rejected_when_month_closed`；`test_m6_store.py::test_confirm_is_idempotent_and_not_found_is_explicit` |
+| T-25 | `test_m6_cost_tools.py::test_cost_read_tools_are_ungated_and_declared_readonly`、`..._read_tool_completes_in_graph_without_gate` |
+| T-26 | `test_m6_costing_tools.py::test_m6_contracts_and_rules_agree`、`..._finance_gate_rules_never_auto_approve` |
+| T-30 | `test_m6_costing_tools.py::test_trial_snapshot_is_intentionally_ungated`；`test_m6_skills.py::test_ledger_without_operation_only_reads` |
+| T-31 | `test_m6_finance_gate.py::test_save_trial_then_confirm_through_finance_gate`（含 `allowed_roles == ["finance-officer","admin"]`） |
+| T-32 | 同 T-31（`status=confirmed` + `committed_by=finance_gate` + `result == data`） |
+| T-33 | `test_m6_finance_gate.py::test_reject_path_leaves_no_confirmed_row` |
+| T-34 | `test_m6_finance_gate.py::test_finance_gate_rejects_non_finance_roles`；`test_m6_store.py::test_finance_gate_authorizes_only_finance_roles` |
+| T-35 | `test_m6_finance_gate.py::test_close_month_freezes_reviewed_totals`；`test_m6_costing_tools.py::test_close_month_reports_reviewed_totals_without_freezing`；`test_m6_store.py::test_close_month_twice_is_rejected` |
+| T-36 | `test_m6_finance_gate.py::test_confirm_conflict_does_not_raise_and_writes_nothing` |
+| T-37 | `test_m6_finance_gate.py::test_document_commit_hook_confirms_saved_document`；`test_m6_documents.py`、`test_m6_assets.py`（propose 不改写已确认原值） |
+| T-40 | `test_m6_fixture_pack.py::test_fixture_missing_quantity_keeps_unit_cost_and_null_total` |
+| T-41 | `test_m6_fixture_pack.py::test_fixture_empty_payroll_is_explicitly_absent`；`test_m6_payroll.py::test_piece_pay_without_rates_returns_nothing_but_missing` |
+| T-42 | `test_m6_fixture_pack.py::test_fixture_monthly_pay_values`、`..._distinguishes_partial_missing_rate` |
+| T-43 | `test_identity_placeholder.py::test_finance_officer_seed_resolves_finance_permissions`、`..._permission_catalog_matches_gate_semantics`、`..._default_role_seeds_ten_roles`；`test_m6_store.py::test_finance_gate_type_registered_with_roles_and_decisions` |
+| T-44（本轮新增项） | `test_m6_finance_gate.py` 的 `result == data` 两条断言（costing / close_month） |
+| T-50 | `test_m6_store.py::test_store_path_resolution_order`；各用例的 `m6_db` fixture（`tmp_path` + `YUNPAI_M6_DB`） |
+| T-51 | ⚠️ **无覆盖用例**（见附录 C） |
+| T-52 | `test_m6_skills.py::test_skill_refuses_any_tool_outside_its_map`、`..._unknown_operation_is_refused` |
+| T-53 | `test_m6_costing_tools.py::test_resolve_reports_missing_instead_of_inventing_price`；`test_m6_cost_tools.py::test_product_cost_reports_missing_without_inventing` |
+| T-60 | `tests/test_api_runs_m6.py::test_api_create_run_exposes_finance_gate` |
+| T-61 | `tests/test_api_runs_m6.py::test_api_resume_approve_persists_confirmed_snapshot` |
+| T-62 | `tests/test_api_runs_m6.py::test_api_resume_reject_keeps_trial_snapshot` |
+| T-63 | `tests/test_api_runs_m6.py::test_api_resume_operator_is_rejected_without_bypassing_gate` |
+| T-64 | `tests/test_api_runs_m6.py::test_api_resume_accepts_trusted_role_headers` |
+| T-65 / T-66 | `tests/test_api_runs_m6.py::test_api_public_state_contains_gate_outputs_and_redacts_content` |
+
+## 附录 C：已知覆盖缺口（执行时须补测或明确挂起）
+
+| 项 | 缺口 | 处置建议 |
+|---|---|---|
+| T-51 租户隔离 | **M6 无用例**：`tests/test_m6_store.py` 全文不含 `tenant_id`；M6 测试中唯一非 default 租户是 `test_m6_fixture_pack.py:42` 的 `fixture-tenant`，仅用于回读自身快照，**没有跨租户不可见断言** | 补一条：租户 A 落 trial 快照后，以租户 B 读 `list_snapshots`/`get_snapshot` 应取不到；或本轮明确挂起并记入遗留 |
+| T-43 运行时授权 | 身份层已能解析 `finance.approve`/`cost.view`，但 Graph 的门判定取 `resume` 载荷中的 `roles`（`reviewer/gates.py` 的 `authorize()`），**不等于 API 已强制校验身份** | 按 D-015 已记为「登记不等于运行时授权」；验收时不得据此声明 API 已强制 |
+| `-k m6` 覆盖面 | `-k` 按文件名/用例名匹配，`test_identity_placeholder.py` 等不含 `m6` 关键字的相关用例**不会被选中** | T-43 须单独跑附录 A 的第 4 条命令 |
+| 工资“集在位但角色集空” | `compute_piece_pay` 在 `report_events` 有值而 `piece_rates` 为空时走**事实缺失**分支（`facts_present=false`），而非「逐行缺口」；该用例原断言 `cost_incomplete is True`，本轮改为 `False` | 属超出「输入为空」字面的语义扩展；无 fail-open（都不产数字），但执行时须确认此定性符合业务预期并签核 |
